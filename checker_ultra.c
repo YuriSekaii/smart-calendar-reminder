@@ -165,8 +165,19 @@ __declspec(dllexport) int CheckMissedEvents(void) {
     }
 
     if (needs_alert) {
+        STARTUPINFOA si;
+        PROCESS_INFORMATION pi;
+        for (size_t i = 0; i < sizeof(si); i++) ((char *)&si)[i] = 0;
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_SHOW;
+
+        char target_cmd[MAX_PATH * 2];
         if (GetFileAttributesA("dist\\AutoChecker.exe") != INVALID_FILE_ATTRIBUTES) {
-            WinExec("dist\\AutoChecker.exe", SW_SHOW);
+            const char *src = "dist\\AutoChecker.exe";
+            char *d = target_cmd;
+            while (*src) *d++ = *src++;
+            *d = '\0';
         } else {
             char base_path[MAX_PATH];
             HMODULE hMod = GetModuleHandleA("checker.dll");
@@ -176,14 +187,16 @@ __declspec(dllexport) int CheckMissedEvents(void) {
             for (char *p = base_path; *p; p++) if (*p == '\\') last_s = p;
             if (last_s) *last_s = '\0';
 
-            char full_cmd[MAX_PATH * 2];
-            char *d = full_cmd;
+            char *d = target_cmd;
             *d++ = '"';
             for (char *s = base_path; *s; s++) *d++ = *s;
             const char *exe_suf = "\\dist\\AutoChecker.exe\"";
             for (const char *s = exe_suf; *s; s++) *d++ = *s;
             *d = '\0';
-            WinExec(full_cmd, SW_SHOW);
+        }
+        if (CreateProcessA(NULL, target_cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
         }
     }
     return needs_alert;
@@ -231,6 +244,7 @@ void mainCRTStartup(void) {
     if (pQPCT) pQPCT(GetCurrentProcess(), &end_cycles);
     ULONG64 total_cycles = end_cycles - start_cycles;
 
+    AttachConsole(ATTACH_PARENT_PROCESS);
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     double to_us = 1000000.0 / (double)freq.QuadPart;
     double elapsed_us = (t5.QuadPart - t0.QuadPart) * to_us;
