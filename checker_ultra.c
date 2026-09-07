@@ -172,13 +172,9 @@ __declspec(dllexport) int CheckMissedEvents(void) {
         si.dwFlags = STARTF_USESHOWWINDOW;
         si.wShowWindow = SW_SHOW;
 
-        char target_cmd[MAX_PATH * 2];
-        if (GetFileAttributesA("dist\\AutoChecker.exe") != INVALID_FILE_ATTRIBUTES) {
-            const char *src = "dist\\AutoChecker.exe";
-            char *d = target_cmd;
-            while (*src) *d++ = *src++;
-            *d = '\0';
-        } else {
+        // Direct fast-path execution: avoid SearchPathW and redundant GetFileAttributes disk I/O
+        if (!CreateProcessA("dist\\AutoChecker.exe", NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+            // Fallback: resolve absolute path if current working directory is external
             char base_path[MAX_PATH];
             HMODULE hMod = GetModuleHandleA("checker.dll");
             if (!hMod) hMod = GetModuleHandleA(NULL);
@@ -187,14 +183,18 @@ __declspec(dllexport) int CheckMissedEvents(void) {
             for (char *p = base_path; *p; p++) if (*p == '\\') last_s = p;
             if (last_s) *last_s = '\0';
 
-            char *d = target_cmd;
-            *d++ = '"';
+            char full_exe[MAX_PATH + 32];
+            char *d = full_exe;
             for (char *s = base_path; *s; s++) *d++ = *s;
-            const char *exe_suf = "\\dist\\AutoChecker.exe\"";
+            const char *exe_suf = "\\dist\\AutoChecker.exe";
             for (const char *s = exe_suf; *s; s++) *d++ = *s;
             *d = '\0';
-        }
-        if (CreateProcessA(NULL, target_cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+
+            if (CreateProcessA(full_exe, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+                CloseHandle(pi.hProcess);
+                CloseHandle(pi.hThread);
+            }
+        } else {
             CloseHandle(pi.hProcess);
             CloseHandle(pi.hThread);
         }
