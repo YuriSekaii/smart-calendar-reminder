@@ -165,9 +165,32 @@ __declspec(dllexport) int CheckMissedEvents(void) {
     }
 
     if (needs_alert) {
-        WinExec("dist\\AutoChecker.exe", SW_SHOW);
+        if (GetFileAttributesA("dist\\AutoChecker.exe") != INVALID_FILE_ATTRIBUTES) {
+            WinExec("dist\\AutoChecker.exe", SW_SHOW);
+        } else {
+            char base_path[MAX_PATH];
+            HMODULE hMod = GetModuleHandleA("checker.dll");
+            if (!hMod) hMod = GetModuleHandleA(NULL);
+            GetModuleFileNameA(hMod, base_path, MAX_PATH);
+            char *last_s = NULL;
+            for (char *p = base_path; *p; p++) if (*p == '\\') last_s = p;
+            if (last_s) *last_s = '\0';
+
+            char full_cmd[MAX_PATH * 2];
+            char *d = full_cmd;
+            *d++ = '"';
+            for (char *s = base_path; *s; s++) *d++ = *s;
+            const char *exe_suf = "\\dist\\AutoChecker.exe\"";
+            for (const char *s = exe_suf; *s; s++) *d++ = *s;
+            *d = '\0';
+            WinExec(full_cmd, SW_SHOW);
+        }
     }
     return needs_alert;
+}
+
+__declspec(dllexport) void CALLBACK RunCheckMissedEvents(HWND hwnd, HINSTANCE hinst, LPSTR lpszCmdLine, int nCmdShow) {
+    CheckMissedEvents();
 }
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
