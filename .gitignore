@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.ipynb_checkpoints
+editor_debug.py
+
+# PyInstaller / Build outputs
+build/
+dist/
+*.spec
+
+# User / Personal data
+reminders.json
+scheduled_tasks.json
+dismissed_today.json
+active_alerts.json
+
+# Environment / IDE / OS
+.vscode/
+.idea/
+desktop.ini

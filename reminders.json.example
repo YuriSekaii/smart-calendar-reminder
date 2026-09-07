@@ -1,0 +1,25 @@
+[
+    {
+        "id": "rem_example_1",
+        "datetime": "2026-09-15 09:00",
+        "note": "Team Standup & Sync",
+        "repeat": "weekly",
+        "type": "weekly",
+        "day_name": "Mon",
+        "weekday": 0,
+        "time": "09:00",
+        "has_end_time": true,
+        "end_time": "09:30",
+        "is_overnight": false
+    },
+    {
+        "id": "rem_example_2",
+        "datetime": "2026-12-25 00:00",
+        "note": "Holiday Celebration",
+        "repeat": "annual",
+        "type": "annual",
+        "time": "00:00",
+        "has_end_time": false,
+        "end_time": null
+    }
+]
