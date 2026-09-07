@@ -692,6 +692,9 @@ def sync_all_tasks(reminders=None):
         if res.returncode == 0:
             new_manifest[event_task_name] = event_sig
 
+    # Ensure Windows Startup folder uses the ultra-fast checker_ultra.exe
+    ensure_startup_checker()
+
     # Clean up obsolete or deleted tasks
     for old_t in old_manifest:
         if old_t not in new_manifest:
@@ -699,3 +702,36 @@ def sync_all_tasks(reminders=None):
 
     save_registered_manifest(new_manifest)
     return len(new_manifest)
+
+def ensure_startup_checker():
+    """Ensures the Windows Startup folder runs the ultra-fast checker_ultra.exe (or AutoChecker fallback)."""
+    try:
+        app_dir = get_app_dir()
+        target_exe = os.path.join(app_dir, "checker_ultra.exe")
+        if not os.path.exists(target_exe):
+            target_exe = get_checker_executable_path()
+
+        startup_dir = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs\Startup")
+        if not os.path.isdir(startup_dir):
+            return
+
+        lnk_path = os.path.join(startup_dir, "Calendar Checker - Shortcut.lnk")
+        old_lnk = os.path.join(startup_dir, "AutoChecker - Shortcut.lnk")
+        if os.path.exists(old_lnk):
+            try:
+                os.remove(old_lnk)
+            except Exception:
+                pass
+
+        ps_cmd = (
+            f"$sh = New-Object -ComObject WScript.Shell; "
+            f"$s = $sh.CreateShortcut('{lnk_path}'); "
+            f"$s.TargetPath = '{target_exe}'; "
+            f"$s.WorkingDirectory = '{app_dir}'; "
+            f"$s.Description = 'Ultra-fast Smart Calendar Bootup Checker'; "
+            f"$s.Save()"
+        )
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd],
+                       capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+    except Exception:
+        pass

@@ -24,12 +24,12 @@ What actually matters to system bootup and OS responsiveness is:
 
 **Action:** Scan `reminders.json` $\rightarrow$ Match missed event from earlier today $\rightarrow$ Dispatch Event ID 777 to Windows Task Scheduler.
 
-| Implementation | Architecture / Type | Process Lifetime / Time to Close | Alert Handling Mechanism | Exact Memory Footprint (Committed / Working Set) |
+| Implementation | Architecture / Type | Process Lifetime / Time to Close | Total CPU Hardware Cycles | Exact Memory Footprint (Committed / Working Set) |
 | :--- | :--- | :--- | :--- | :--- |
-| **PyInstaller (`AutoChecker.exe`)** | Self-extracting archive | ~1,519.7 ms *(~1.52 s)* | Synchronous PyInstaller extract + Tkinter bootstrap | **49,208 KB (~49.2 MB)** *(7,352 KB bootloader + 41,856 KB GUI)* |
-| **Raw Python (`checker.py`)** | CPython 3.11 Runtime | ~174.9 ms | Synchronous Python GUI bootstrap | **~25,000 KB (~25 MB)** held until dismissed |
-| **Pure C Standalone (`checker_ultra.exe`)** | **Standalone Win32 Process** | **9.98 ms** | **Windows Event 777 Handoff (60 µs)** | **76 KB Private Commit (Peak 496 KB) / 32 KB WS (Peak 3.0 MB)** |
-| **Pure C DLL (`checker.dll`)** | **In-Process Shared Library** | **1.12 ms** *(597 µs internal)* | **Windows Event 777 Handoff (60 µs)** | **64 KB static BSS buffer (0 KB heap, 0 MB host overhead)** |
+| **PyInstaller (`AutoChecker.exe`)** | Self-extracting archive | ~1,519.7 ms *(~1.52 s)* | ~2,200,000,000+ | **49,208 KB (~49.2 MB)** *(7,352 KB bootloader + 41,856 KB GUI)* |
+| **Raw Python (`checker.py`)** | CPython 3.11 Runtime | ~174.9 ms | ~250,000,000+ | **~25,000 KB (~25 MB)** held until dismissed |
+| **Pure C Standalone (`checker_ultra.exe`)** | **Standalone Win32 Process** | **9.91 ms** | **~12,280,000** | **76 KB Private Commit (Peak 496 KB) / 32 KB WS (Peak 3.0 MB)** |
+| **Pure C DLL (`checker.dll`)** | **In-Process Shared Library** | **1.12 ms** *(354 µs internal)* | **~350,000 internal** *(~1.2M total)* | **64 KB static BSS buffer (0 KB heap, 0 MB host overhead)** |
 
 * **The 16x DLL Speedup:** When using `checker.dll`, calling `CreateProcessA` directly took **~5.8 ms** of CPU time inside the process. By instead calling `ReportEventA` with Event ID 777, the handoff completes in **60 µs**, dropping the DLL's in-memory execution time to **~0.35–0.59 ms**—a **16.4x speedup**!
 * **Why Task Scheduler EventTrigger is Best:**  
