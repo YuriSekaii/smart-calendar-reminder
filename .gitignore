@@ -5,10 +5,12 @@ __pycache__/
 *.ipynb_checkpoints
 editor_debug.py
 
-# PyInstaller / Build outputs
+# PyInstaller / Build outputs / Binaries
 build/
 dist/
 *.spec
+*.exe
+*.bak
 
 # User / Personal data
 reminders.json
