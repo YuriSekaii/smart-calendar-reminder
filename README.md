@@ -4,6 +4,10 @@
 
 ---
 
+![Smart Calendar UI Preview](assets/preview.png)
+
+---
+
 ## 💡 Overview
 
 Most desktop reminder utilities run continuous background processes or infinite `while` loops, needlessly consuming system memory (RAM) and CPU cycles. 
