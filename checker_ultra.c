@@ -2,8 +2,8 @@
 #include <windows.h>
 #include <stdint.h>
 
-// Zero CRT - Zero allocation - Memory Mapped I/O
-// Fastest possible pure Win32 implementation
+// Bare-metal Zero-CRT bootup scanner
+// Stripped of all MSVCRT runtime, TLS, and heap overhead
 
 size_t strlen(const char *s) {
     size_t len = 0;
@@ -17,24 +17,6 @@ static inline int parse_2d(const char *p) {
 
 static inline int parse_4d(const char *p) {
     return (p[0] - '0') * 1000 + (p[1] - '0') * 100 + (p[2] - '0') * 10 + (p[3] - '0');
-}
-
-static inline char *my_strrchr(char *s, char c) {
-    char *last = NULL;
-    while (*s) {
-        if (*s == c) last = s;
-        s++;
-    }
-    return last;
-}
-
-static inline void my_strcpy(char *dst, const char *src) {
-    while ((*dst++ = *src++));
-}
-
-static inline void my_strcat(char *dst, const char *src) {
-    while (*dst) dst++;
-    while ((*dst++ = *src++));
 }
 
 static inline int mem_contains(const char *start, const char *end, const char *target, size_t tlen) {
@@ -55,6 +37,29 @@ static void print_str(HANDLE h, const char *str) {
     WriteFile(h, str, (DWORD)strlen(str), &written, NULL);
 }
 
+static void print_float(HANDLE h, double val) {
+    char buf[32];
+    int whole = (int)val;
+    int frac = (int)((val - (double)whole) * 1000.0);
+    if (frac < 0) frac = -frac;
+    
+    char temp[16];
+    int ti = 0;
+    if (whole == 0) temp[ti++] = '0';
+    else {
+        int w = whole;
+        while (w > 0) { temp[ti++] = '0' + (w % 10); w /= 10; }
+    }
+    int bi = 0;
+    for (int i = ti - 1; i >= 0; i--) buf[bi++] = temp[i];
+    buf[bi++] = '.';
+    buf[bi++] = '0' + (frac / 100);
+    buf[bi++] = '0' + ((frac / 10) % 10);
+    buf[bi++] = '0' + (frac % 10);
+    buf[bi] = '\0';
+    print_str(h, buf);
+}
+
 static void print_uint(HANDLE h, unsigned long long val) {
     char buf[32];
     int idx = 30;
@@ -70,79 +75,76 @@ static void print_uint(HANDLE h, unsigned long long val) {
     print_str(h, &buf[idx + 1]);
 }
 
+// 64 KB static buffer in BSS (occupies 0 bytes in executable file on disk)
+static char s_buffer[65536];
+
 typedef BOOL (WINAPI *pfnQPCT)(HANDLE, PULONG64);
 
 void mainCRTStartup(void) {
-    LARGE_INTEGER qpc_start, qpc_end, qpc_freq;
-    QueryPerformanceFrequency(&qpc_freq);
-    QueryPerformanceCounter(&qpc_start);
+    LARGE_INTEGER freq, t0, t1, t2, t3, t4, t5, t6;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&t0);
 
     ULONG64 start_cycles = 0, end_cycles = 0;
     HMODULE hK32 = GetModuleHandleA("kernel32.dll");
     pfnQPCT pQPCT = (pfnQPCT)GetProcAddress(hK32, "QueryProcessCycleTime");
     if (pQPCT) pQPCT(GetCurrentProcess(), &start_cycles);
 
+    // Fast check for command-line arguments
     char *cmdLine = GetCommandLineA();
-    int is_benchmark = 0;
+    int is_profile = 0;
     for (char *c = cmdLine; *c; c++) {
-        if (c[0] == '-' && c[1] == '-' && c[2] == 'b') {
-            is_benchmark = 1;
+        if (c[0] == '-' && c[1] == '-') {
+            is_profile = 1;
             break;
         }
     }
 
+    // Action 1: Get Current Local Time from Kernel
     SYSTEMTIME st;
     GetLocalTime(&st);
+    QueryPerformanceCounter(&t1);
 
+    // Action 2: Direct File Open (Fast Path: check current directory first)
     char base_dir[MAX_PATH];
-    GetModuleFileNameA(NULL, base_dir, MAX_PATH);
-    char *last_slash = my_strrchr(base_dir, '\\');
-    if (last_slash) *last_slash = '\0';
-
-    char json_path[MAX_PATH];
-    my_strcpy(json_path, base_dir);
-    my_strcat(json_path, "\\reminders.json");
-
-    HANDLE hFile = CreateFileA(json_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    base_dir[0] = '\0';
+    HANDLE hFile = CreateFileA("reminders.json", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
-        my_strcpy(json_path, base_dir);
-        my_strcat(json_path, "\\dist\\reminders.json");
+        // Slow Path: resolve via GetModuleFileNameA
+        GetModuleFileNameA(NULL, base_dir, MAX_PATH);
+        char *last_slash = NULL;
+        for (char *c = base_dir; *c; c++) if (*c == '\\') last_slash = c;
+        if (last_slash) *last_slash = '\0';
+
+        char json_path[MAX_PATH];
+        char *d = json_path;
+        for (char *s = base_dir; *s; s++) *d++ = *s;
+        const char *suffix = "\\reminders.json";
+        for (const char *s = suffix; *s; s++) *d++ = *s;
+        *d = '\0';
+
         hFile = CreateFileA(json_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hFile == INVALID_HANDLE_VALUE) {
             ExitProcess(0);
         }
     }
+    QueryPerformanceCounter(&t2);
 
-    DWORD file_size = GetFileSize(hFile, NULL);
-    if (file_size == 0 || file_size > 10 * 1024 * 1024) {
-        CloseHandle(hFile);
-        ExitProcess(0);
-    }
+    // Action 3: Read File Directly into Static Cache (Zero Heap Allocation)
+    DWORD bytes_read = 0;
+    ReadFile(hFile, s_buffer, sizeof(s_buffer) - 1, &bytes_read, NULL);
+    s_buffer[bytes_read] = '\0';
+    CloseHandle(hFile);
+    QueryPerformanceCounter(&t3);
 
-    // Memory Mapped File: Zero heap allocation, zero userspace buffer copying
-    HANDLE hMapping = CreateFileMappingA(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
-    if (!hMapping) {
-        CloseHandle(hFile);
-        ExitProcess(0);
-    }
-
-    const char *buf = (const char *)MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0);
-    if (!buf) {
-        CloseHandle(hMapping);
-        CloseHandle(hFile);
-        ExitProcess(0);
-    }
-
+    // Action 4: 64-bit SWAR Scanning & Integer Date Evaluation
     int needs_alert = 0;
-    const char *limit = buf + file_size - 25; // Ensure safe lookahead
+    const char *buf = s_buffer;
+    const char *limit = buf + bytes_read - 25;
     const char *p = buf;
-
-    // 64-bit SWAR key for "datetime"
-    // 'd' | ('a'<<8) | ('t'<<16) | ('e'<<24) | ('t'<<32) | ('i'<<40) | ('m'<<48) | ('e'<<56)
-    const uint64_t KEY_DATETIME = 0x656d697465746164ULL;
+    const uint64_t KEY_DATETIME = 0x656d697465746164ULL; // "datetime"
 
     while (p <= limit) {
-        // Fast search for "datetime"
         if (*(const uint64_t *)p == KEY_DATETIME && *(p - 1) == '"' && *(p + 8) == '"') {
             const char *dt_val = p + 9;
             while (*dt_val == ' ' || *dt_val == ':' || *dt_val == '\t') dt_val++;
@@ -155,11 +157,10 @@ void mainCRTStartup(void) {
                 int ev_hour  = parse_2d(dt_val + 11);
                 int ev_min   = parse_2d(dt_val + 14);
 
-                // Locate enclosing object bounds in-place (no allocation, no copying)
                 const char *obj_start = p;
                 while (obj_start > buf && *obj_start != '{') obj_start--;
                 const char *obj_end = p;
-                while (obj_end < (buf + file_size) && *obj_end != '}') obj_end++;
+                while (obj_end < (buf + bytes_read) && *obj_end != '}') obj_end++;
 
                 int is_annual = mem_contains(obj_start, obj_end, "\"annual\"", 8);
                 int is_daily_or_weekly = mem_contains(obj_start, obj_end, "\"daily\"", 7) ||
@@ -194,37 +195,68 @@ void mainCRTStartup(void) {
             p++;
         }
     }
+    QueryPerformanceCounter(&t4);
 
-    UnmapViewOfFile(buf);
-    CloseHandle(hMapping);
-    CloseHandle(hFile);
+    // Action 5: Launch GUI Alert Popup if event detected
+    if (needs_alert) {
+        if (base_dir[0] == '\0') {
+            GetModuleFileNameA(NULL, base_dir, MAX_PATH);
+            char *last_slash = NULL;
+            for (char *c = base_dir; *c; c++) if (*c == '\\') last_slash = c;
+            if (last_slash) *last_slash = '\0';
+        }
+        char auto_cmd[MAX_PATH * 2];
+        char *ac = auto_cmd;
+        *ac++ = '"';
+        for (char *s = base_dir; *s; s++) *ac++ = *s;
+        const char *exe_suf = "\\dist\\AutoChecker.exe\"";
+        for (const char *s = exe_suf; *s; s++) *ac++ = *s;
+        *ac = '\0';
+        WinExec(auto_cmd, SW_SHOW);
+    }
+    QueryPerformanceCounter(&t5);
 
-    QueryPerformanceCounter(&qpc_end);
     if (pQPCT) pQPCT(GetCurrentProcess(), &end_cycles);
-
-    double elapsed_us = (double)(qpc_end.QuadPart - qpc_start.QuadPart) * 1000000.0 / (double)qpc_freq.QuadPart;
     ULONG64 total_cycles = end_cycles - start_cycles;
 
-    if (is_benchmark) {
+    if (is_profile) {
         HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-        print_str(hOut, "NeedsAlert: ");
-        print_str(hOut, needs_alert ? "True\n" : "False\n");
-        print_str(hOut, "Internal Execution Time: ");
-        print_uint(hOut, (unsigned long long)elapsed_us);
-        print_str(hOut, " microseconds (");
-        print_uint(hOut, (unsigned long long)(elapsed_us / 1000.0));
-        print_str(hOut, " ms)\nCPU Cycles: ");
+        double to_us = 1000000.0 / (double)freq.QuadPart;
+
+        print_str(hOut, "====================================================\n");
+        print_str(hOut, "ACTION-BY-ACTION TIME BREAKDOWN (MICRO-PROFILED)\n");
+        print_str(hOut, "====================================================\n");
+        print_str(hOut, "Action 1: Kernel Time Retrieval (GetLocalTime)  : ");
+        print_float(hOut, (t1.QuadPart - t0.QuadPart) * to_us);
+        print_str(hOut, " us\n");
+
+        print_str(hOut, "Action 2: File Open & Path Check (CreateFileA)  : ");
+        print_float(hOut, (t2.QuadPart - t1.QuadPart) * to_us);
+        print_str(hOut, " us\n");
+
+        print_str(hOut, "Action 3: File Read into Static Cache (ReadFile): ");
+        print_float(hOut, (t3.QuadPart - t2.QuadPart) * to_us);
+        print_str(hOut, " us\n");
+
+        print_str(hOut, "Action 4: 64-bit SWAR Scanning & Date Math      : ");
+        print_float(hOut, (t4.QuadPart - t3.QuadPart) * to_us);
+        print_str(hOut, " us\n");
+
+        print_str(hOut, "Action 5: GUI Alert Launch (WinExec)            : ");
+        print_float(hOut, (t5.QuadPart - t4.QuadPart) * to_us);
+        print_str(hOut, " us ");
+        print_str(hOut, needs_alert ? "[ALERT FIRED]\n" : "[SKIPPED - NO EVENT]\n");
+
+        print_str(hOut, "----------------------------------------------------\n");
+        print_str(hOut, "TOTAL INTERNAL EXECUTION TIME                   : ");
+        print_float(hOut, (t5.QuadPart - t0.QuadPart) * to_us);
+        print_str(hOut, " us (");
+        print_float(hOut, (t5.QuadPart - t0.QuadPart) * 1000.0 / (double)freq.QuadPart);
+        print_str(hOut, " ms)\n");
+        print_str(hOut, "TOTAL CPU CYCLES SPENT                          : ");
         print_uint(hOut, total_cycles);
         print_str(hOut, " cycles\n");
-        ExitProcess(0);
-    }
-
-    if (needs_alert) {
-        char auto_cmd[MAX_PATH * 2];
-        my_strcpy(auto_cmd, "\"");
-        my_strcat(auto_cmd, base_dir);
-        my_strcat(auto_cmd, "\\dist\\AutoChecker.exe\"");
-        WinExec(auto_cmd, SW_SHOW);
+        print_str(hOut, "====================================================\n");
     }
 
     ExitProcess(0);
