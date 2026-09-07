@@ -46,6 +46,8 @@ Calendar/
 ├── checker.py           # Python notification trigger & alert dialog
 ├── checker_ultra.c      # Dual-target Zero-CRT C checker (standalone .exe + 58 µs in-memory .dll)
 ├── scheduler_helper.py  # Backend engine (JSON persistence, recurrence logic, Windows API / schtasks)
+├── benchmark.py         # Automated reproducible benchmark test suite
+├── BENCHMARK_RESULTS.md # Detailed run-by-run benchmark report & methodology
 ├── requirements.txt     # Python dependencies
 └── reminders.json.example # Sample event structure
 ```
@@ -102,6 +104,16 @@ gcc -O3 -s -nostdlib -e mainCRTStartup -mwindows -fno-asynchronous-unwind-tables
 # 2. In-Memory Shared Library (.DLL) - Ultra-fast 58 µs in-process check:
 gcc -O3 -shared -s -nostdlib -e DllMain -fno-ident -fno-asynchronous-unwind-tables checker_ultra.c -lkernel32 -o checker.dll
 ```
+
+### 🧪 Reproducing the Benchmarks
+
+You can execute the automated benchmark suite directly on your machine:
+
+```bash
+python benchmark.py
+```
+
+*For complete run-by-run tables, QPC CPU hardware cycle analysis, and testing methodology, see [`BENCHMARK_RESULTS.md`](BENCHMARK_RESULTS.md).*
 
 ---
 
