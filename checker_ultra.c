@@ -4,6 +4,7 @@
 
 // Bare-metal Zero-CRT bootup scanner
 // Stripped of all MSVCRT runtime, TLS, and heap overhead
+// Can be compiled as standalone .exe or in-memory .dll
 
 size_t strlen(const char *s) {
     size_t len = 0;
@@ -78,39 +79,14 @@ static void print_uint(HANDLE h, unsigned long long val) {
 // 64 KB static buffer in BSS (occupies 0 bytes in executable file on disk)
 static char s_buffer[65536];
 
-typedef BOOL (WINAPI *pfnQPCT)(HANDLE, PULONG64);
-
-void mainCRTStartup(void) {
-    LARGE_INTEGER freq, t0, t1, t2, t3, t4, t5, t6;
-    QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&t0);
-
-    ULONG64 start_cycles = 0, end_cycles = 0;
-    HMODULE hK32 = GetModuleHandleA("kernel32.dll");
-    pfnQPCT pQPCT = (pfnQPCT)GetProcAddress(hK32, "QueryProcessCycleTime");
-    if (pQPCT) pQPCT(GetCurrentProcess(), &start_cycles);
-
-    // Fast check for command-line arguments
-    char *cmdLine = GetCommandLineA();
-    int is_profile = 0;
-    for (char *c = cmdLine; *c; c++) {
-        if (c[0] == '-' && c[1] == '-') {
-            is_profile = 1;
-            break;
-        }
-    }
-
-    // Action 1: Get Current Local Time from Kernel
+// Core In-Memory Checking Logic (Executes in ~60 microseconds)
+__declspec(dllexport) int CheckMissedEvents(void) {
     SYSTEMTIME st;
     GetLocalTime(&st);
-    QueryPerformanceCounter(&t1);
 
-    // Action 2: Direct File Open (Fast Path: check current directory first)
-    char base_dir[MAX_PATH];
-    base_dir[0] = '\0';
     HANDLE hFile = CreateFileA("reminders.json", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
-        // Slow Path: resolve via GetModuleFileNameA
+        char base_dir[MAX_PATH];
         GetModuleFileNameA(NULL, base_dir, MAX_PATH);
         char *last_slash = NULL;
         for (char *c = base_dir; *c; c++) if (*c == '\\') last_slash = c;
@@ -124,20 +100,14 @@ void mainCRTStartup(void) {
         *d = '\0';
 
         hFile = CreateFileA(json_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-        if (hFile == INVALID_HANDLE_VALUE) {
-            ExitProcess(0);
-        }
+        if (hFile == INVALID_HANDLE_VALUE) return 0;
     }
-    QueryPerformanceCounter(&t2);
 
-    // Action 3: Read File Directly into Static Cache (Zero Heap Allocation)
     DWORD bytes_read = 0;
     ReadFile(hFile, s_buffer, sizeof(s_buffer) - 1, &bytes_read, NULL);
     s_buffer[bytes_read] = '\0';
     CloseHandle(hFile);
-    QueryPerformanceCounter(&t3);
 
-    // Action 4: 64-bit SWAR Scanning & Integer Date Evaluation
     int needs_alert = 0;
     const char *buf = s_buffer;
     const char *limit = buf + bytes_read - 25;
@@ -173,7 +143,6 @@ void mainCRTStartup(void) {
                     }
                 }
 
-                // Check 1: Missed earlier today
                 if (ev_year == st.wYear && ev_month == st.wMonth && ev_day == st.wDay) {
                     if (ev_hour < st.wHour || (ev_hour == st.wHour && ev_min <= st.wMinute)) {
                         needs_alert = 1;
@@ -181,7 +150,6 @@ void mainCRTStartup(void) {
                     }
                 }
 
-                // Check 2: Upcoming in next 7 days
                 if (!is_daily_or_weekly) {
                     int day_diff = (ev_year - st.wYear) * 365 + (ev_month - st.wMonth) * 30 + (ev_day - st.wDay);
                     if (day_diff > 0 && day_diff <= 7) {
@@ -195,69 +163,69 @@ void mainCRTStartup(void) {
             p++;
         }
     }
-    QueryPerformanceCounter(&t4);
 
-    // Action 5: Launch GUI Alert Popup if event detected
     if (needs_alert) {
-        if (base_dir[0] == '\0') {
-            GetModuleFileNameA(NULL, base_dir, MAX_PATH);
-            char *last_slash = NULL;
-            for (char *c = base_dir; *c; c++) if (*c == '\\') last_slash = c;
-            if (last_slash) *last_slash = '\0';
-        }
-        char auto_cmd[MAX_PATH * 2];
-        char *ac = auto_cmd;
-        *ac++ = '"';
-        for (char *s = base_dir; *s; s++) *ac++ = *s;
-        const char *exe_suf = "\\dist\\AutoChecker.exe\"";
-        for (const char *s = exe_suf; *s; s++) *ac++ = *s;
-        *ac = '\0';
-        WinExec(auto_cmd, SW_SHOW);
+        WinExec("dist\\AutoChecker.exe", SW_SHOW);
     }
-    QueryPerformanceCounter(&t5);
+    return needs_alert;
+}
 
+BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
+    return TRUE;
+}
+
+typedef BOOL (WINAPI *pfnQPCT)(HANDLE, PULONG64);
+
+void mainCRTStartup(void) {
+    char *cmdLine = GetCommandLineA();
+    int is_profile = 0;
+    for (char *c = cmdLine; *c; c++) {
+        if (c[0] == '-' && c[1] == '-') {
+            is_profile = 1;
+            break;
+        }
+    }
+
+    if (!is_profile) {
+        // Pure bare-metal execution path: Zero profiling overhead
+        CheckMissedEvents();
+        ExitProcess(0);
+    }
+
+    // Diagnostic profiling path (measures internal actions)
+    LARGE_INTEGER freq, t0, t1, t2, t3, t4, t5;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&t0);
+
+    ULONG64 start_cycles = 0, end_cycles = 0;
+    HMODULE hK32 = GetModuleHandleA("kernel32.dll");
+    pfnQPCT pQPCT = (pfnQPCT)GetProcAddress(hK32, "QueryProcessCycleTime");
+    if (pQPCT) pQPCT(GetCurrentProcess(), &start_cycles);
+
+    int alert_result = CheckMissedEvents();
+
+    QueryPerformanceCounter(&t5);
     if (pQPCT) pQPCT(GetCurrentProcess(), &end_cycles);
     ULONG64 total_cycles = end_cycles - start_cycles;
 
-    if (is_profile) {
-        HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-        double to_us = 1000000.0 / (double)freq.QuadPart;
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    double to_us = 1000000.0 / (double)freq.QuadPart;
+    double elapsed_us = (t5.QuadPart - t0.QuadPart) * to_us;
 
-        print_str(hOut, "====================================================\n");
-        print_str(hOut, "ACTION-BY-ACTION TIME BREAKDOWN (MICRO-PROFILED)\n");
-        print_str(hOut, "====================================================\n");
-        print_str(hOut, "Action 1: Kernel Time Retrieval (GetLocalTime)  : ");
-        print_float(hOut, (t1.QuadPart - t0.QuadPart) * to_us);
-        print_str(hOut, " us\n");
-
-        print_str(hOut, "Action 2: File Open & Path Check (CreateFileA)  : ");
-        print_float(hOut, (t2.QuadPart - t1.QuadPart) * to_us);
-        print_str(hOut, " us\n");
-
-        print_str(hOut, "Action 3: File Read into Static Cache (ReadFile): ");
-        print_float(hOut, (t3.QuadPart - t2.QuadPart) * to_us);
-        print_str(hOut, " us\n");
-
-        print_str(hOut, "Action 4: 64-bit SWAR Scanning & Date Math      : ");
-        print_float(hOut, (t4.QuadPart - t3.QuadPart) * to_us);
-        print_str(hOut, " us\n");
-
-        print_str(hOut, "Action 5: GUI Alert Launch (WinExec)            : ");
-        print_float(hOut, (t5.QuadPart - t4.QuadPart) * to_us);
-        print_str(hOut, " us ");
-        print_str(hOut, needs_alert ? "[ALERT FIRED]\n" : "[SKIPPED - NO EVENT]\n");
-
-        print_str(hOut, "----------------------------------------------------\n");
-        print_str(hOut, "TOTAL INTERNAL EXECUTION TIME                   : ");
-        print_float(hOut, (t5.QuadPart - t0.QuadPart) * to_us);
-        print_str(hOut, " us (");
-        print_float(hOut, (t5.QuadPart - t0.QuadPart) * 1000.0 / (double)freq.QuadPart);
-        print_str(hOut, " ms)\n");
-        print_str(hOut, "TOTAL CPU CYCLES SPENT                          : ");
-        print_uint(hOut, total_cycles);
-        print_str(hOut, " cycles\n");
-        print_str(hOut, "====================================================\n");
-    }
+    print_str(hOut, "====================================================\n");
+    print_str(hOut, "INTERNAL CODE EXECUTION (DIRECT MEASUREMENT)\n");
+    print_str(hOut, "====================================================\n");
+    print_str(hOut, "Total Internal Time   : ");
+    print_float(hOut, elapsed_us);
+    print_str(hOut, " us (");
+    print_float(hOut, elapsed_us / 1000.0);
+    print_str(hOut, " ms)\n");
+    print_str(hOut, "Total CPU Cycles      : ");
+    print_uint(hOut, total_cycles);
+    print_str(hOut, " cycles\n");
+    print_str(hOut, "Alert Triggered       : ");
+    print_str(hOut, alert_result ? "YES (Popup Fired)\n" : "NO (Quiet State)\n");
+    print_str(hOut, "====================================================\n");
 
     ExitProcess(0);
 }
