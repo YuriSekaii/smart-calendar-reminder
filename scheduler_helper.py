@@ -673,6 +673,25 @@ def sync_all_tasks(reminders=None):
                 if res.returncode == 0:
                     new_manifest[task_name] = task_sig
 
+    # Automatically register Windows Task Scheduler Event Trigger for SmartCalendar Event ID 777
+    event_task_name = "MyCalendar_EventAlert"
+    event_sig = f"ONEVENT|777|{checker_exe}"
+    if event_task_name in old_manifest and old_manifest[event_task_name] == event_sig:
+        new_manifest[event_task_name] = event_sig
+    else:
+        event_cmd = [
+            'schtasks', '/Create',
+            '/TN', event_task_name,
+            '/TR', checker_exe if checker_exe.startswith('"') else f'"{checker_exe}"',
+            '/SC', 'ONEVENT',
+            '/EC', 'Application',
+            '/MO', "*[System[Provider[@Name='SmartCalendar'] and (EventID=777)]]",
+            '/F'
+        ]
+        res = subprocess.run(event_cmd, capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+        if res.returncode == 0:
+            new_manifest[event_task_name] = event_sig
+
     # Clean up obsolete or deleted tasks
     for old_t in old_manifest:
         if old_t not in new_manifest:

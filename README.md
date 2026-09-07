@@ -73,45 +73,33 @@ To eliminate interpreted runtime overhead during Windows startup, the project in
 > A background checker occupies system RAM and CPU resources for the entire duration it remains open. While internal code logic may run quickly in memory, runtime bootstrap, module loading, and process teardown dictate real-world OS bootup impact. **The faster the process exits and closes, the faster 100% of its RAM and handles are released back to Windows.**
 
 #### Scenario 1: Missed Event Detected (Popup Triggered)
-*Action: Scan `reminders.json` $\rightarrow$ Match missed event from earlier today $\rightarrow$ Dispatch GUI alert popup.*
+*Action: Scan `reminders.json` $\rightarrow$ Match missed event from earlier today $\rightarrow$ Dispatch Event ID 777 to Windows Task Scheduler.*
 
-| Implementation | Execution Mode | Process Lifetime (RAM Release) | Alert Handling Mechanism | Exact RAM Footprint (Committed / Working Set) |
+| Implementation | Type / Architecture | Process Lifetime (RAM Release) | Alert Handling Mechanism | Exact RAM Footprint (Committed / Working Set) |
 | :--- | :--- | :--- | :--- | :--- |
-| **PyInstaller (`AutoChecker.exe`)** | Standalone Executable | ~1,575 ms *(~1.58 s)* | Synchronous Python GUI bootstrap | **49,208 KB (~49.2 MB)** *(7,352 KB bootloader + 41,856 KB GUI)* |
-| **Raw Python (`checker.py`)** | CPython 3.11 Runtime | ~172.6 ms | Synchronous Python VM + Tkinter | **~25,000 KB (~25 MB)** held until dismissed |
-| **Pure C Standalone (`checker_ultra.exe`)** | **Signal Mode (`--signal`)** | **8.98 ms** | **Microsecond Exit Code Bit `1`** | **76 KB Private Commit (Peak 496 KB) / 32 KB WS (Peak 3.0 MB)** |
-| **Pure C Standalone (`checker_ultra.exe`)** | **Event Log Mode (`--event`)**| **9.88 ms** | **Task Scheduler `EventTrigger`** | **76 KB Private Commit (Peak 496 KB) / 32 KB WS (Peak 3.0 MB)** |
-| **Pure C Standalone (`checker_ultra.exe`)** | **Direct Spawn (Default)** | **14.31 ms** | **Autonomous async `CreateProcessA`** | **76 KB Private Commit (Peak 496 KB) / 32 KB WS (Peak 3.0 MB)** |
-| **Pure C DLL (`checker.dll`)** | **In-Process Shared Library** | **6.27 ms** | **In-memory scan + async spawn** | **64 KB static buffer (0 KB heap, 0 MB host overhead)** |
+| **PyInstaller (`AutoChecker.exe`)** | Self-extracting archive | ~1,519.7 ms *(~1.52 s)* | Synchronous Python GUI bootstrap | **49,208 KB (~49.2 MB)** *(7,352 KB bootloader + 41,856 KB GUI)* |
+| **Raw Python (`checker.py`)** | CPython 3.11 Runtime | ~174.9 ms | Synchronous Python VM + Tkinter | **~25,000 KB (~25 MB)** held until dismissed |
+| **Pure C Binary (`checker_ultra.exe`)** | **Standalone Win32 Process** | **9.98 ms** | **Windows Event 777 Handoff (60 µs)** | **76 KB Private Commit (Peak 496 KB) / 32 KB WS (Peak 3.0 MB)** |
+| **Pure C DLL (`checker.dll`)** | **In-Process Shared Library** | **1.12 ms** *(354 µs internal)* | **Windows Event 777 Handoff (60 µs)** | **64 KB static BSS buffer (0 KB heap, 0 MB host overhead)** |
 
 #### Scenario 2: Quiet Bootup / No Event Detected (95%+ of System Boots)
 *Action: Scan `reminders.json` $\rightarrow$ Zero missed events $\rightarrow$ Instant silent termination and RAM release.*
 
 | Implementation | Type / Architecture | Total Process Lifetime (RAM Release) | Total CPU Cycles Consumed | Exact RAM Footprint (Committed / Working Set) |
 | :--- | :--- | :--- | :--- | :--- |
-| **PyInstaller (`AutoChecker.exe`)** | Self-extracting archive | ~1,415.7 ms *(~1.42 s)* | ~2,145,000,000 | ~45 MB held for 1.42 s |
-| **Raw Python (`checker.py`)** | CPython 3.11 Runtime | ~66.9 ms | ~224,000,000 | ~25 MB held for 67 ms |
-| **Pure C Binary (`checker_ultra.exe`)** | **Standalone Win32 Process** | **7.64 ms** | **~10,500,000** | **76 KB Private Commit (Peak 496 KB) / 32 KB WS (Peak 3.0 MB)** |
-| **Pure C DLL (`checker.dll`)** | **In-Process Shared Library** | **0.322 ms** *(322 µs)* | **~190,000** | **64 KB static BSS buffer (0 KB heap overhead)** |
+| **PyInstaller (`AutoChecker.exe`)** | Self-extracting archive | ~1,392.5 ms *(~1.39 s)* | ~2,146,000,000 | ~45 MB held for 1.39 s |
+| **Raw Python (`checker.py`)** | CPython 3.11 Runtime | ~66.1 ms | ~222,000,000 | ~25 MB held for 66 ms |
+| **Pure C Binary (`checker_ultra.exe`)** | **Standalone Win32 Process** | **7.79 ms** | **~10,600,000** | **76 KB Private Commit (Peak 496 KB) / 32 KB WS (Peak 3.0 MB)** |
+| **Pure C DLL (`checker.dll`)** | **In-Process Shared Library** | **0.339 ms** *(339 µs)* | **~190,000** | **64 KB static BSS buffer (0 KB heap overhead)** |
 
 > 🚀 **Key Performance & Memory Takeaways:**
-> - **Immediate RAM Release on Quiet Boot:** The pure C executable (`checker_ultra.exe`) checks and exits cleanly in **7.64 ms** (**322 µs for DLL**), immediately returning 100% of allocated memory back to Windows. This is **~185x faster memory release** than PyInstaller while saving over **2.13 billion CPU clock cycles**.
-> - **Faithful Memory Breakdown (Why "0 MB Extra" & Exact KB Usage):**
+> - **16x Speedup in `checker.dll` via Event ID 777 Handoff:** Calling kernel `CreateProcessA` directly inside a DLL stalls execution for ~5.8 ms. By switching to Windows Event Log signaling (`ReportEventA` with custom Event ID 777), dispatching the event takes only **60 µs**, dropping the DLL's internal execution time from **5.8 ms down to 0.35 ms (354 µs)**—a massive **16.4x speedup**!
+> - **Immediate RAM Release on Quiet Boot:** The pure C executable (`checker_ultra.exe`) checks and exits cleanly in **7.79 ms** (**339 µs for DLL**), immediately returning 100% of allocated memory back to Windows. This is **~178x faster memory release** than PyInstaller while saving over **2.13 billion CPU clock cycles**.
+> - **Zero Event Collision:** Uses custom Event ID **777** with source name `SmartCalendar`. Unlike generic Event ID 1001 (which is shared with Windows Error Reporting crash dumps), Event ID 777 is completely unique to this application.
+> - **Faithful Memory Breakdown:**
 >   - **Private Committed Bytes (76 KB, Peak 496 KB):** The actual private memory dirtied and owned exclusively by `checker_ultra.exe` (stack, PE headers, private variables).
 >   - **Working Set (32 KB at exit, Peak 3,060 KB / ~3.0 MB):** The physical memory pages mapped into the process. On 64-bit Windows NT, every standalone `.exe` maps the OS subsystem DLLs (`ntdll.dll` and `kernel32.dll`). These read-only DLL code pages are shared system-wide across all running Windows processes and cost 0 extra physical memory to the OS.
 >   - **PyInstaller Footprint (~49 MB):** When an alert window is shown, `AutoChecker.exe` holds **49,208 KB** (49.2 MB) in active RAM continuously until the user clicks Dismiss.
-> - **Why `CreateProcess` Takes ~5 ms (Not "A Few Cycles"):**
->   In Windows NT, launching a process is not a simple message send—it is a heavyweight synchronous kernel operation (`NtCreateUserProcess`). The operating system must:
->   1. Open and parse PE headers on NTFS (`IoCreateFile`).
->   2. Allocate the `EPROCESS` block, page directory tables (PML4), and new virtual address space.
->   3. Map executable sections and system DLLs.
->   4. Synchronously notify kernel minifilter drivers—specifically **Windows Defender (`WdFilter.sys`)** via `PsSetCreateProcessNotifyRoutineEx` to inspect executable headers before allowing execution.
->   5. Complete an inter-process ALPC round-trip with the Windows Subsystem (`csrss.exe`) to register process and thread IDs.  
->   This kernel pipeline consumes ~4.85 ms (~18M CPU cycles) before returning.
-> - **Microsecond "Mark a Bit" Event Handoff (`--signal` & `--event`):**
->   To completely avoid waiting for `CreateProcess`, `checker_ultra.exe` supports two zero-wait signaling mechanisms:
->   - **Signal Mode (`--signal` / `-s`):** Marks the event using the native process exit code (`ExitProcess(1)`). Takes **< 1 µs**, and the checker exits in **8.98 ms** with **0 ms extra wait for GUI**. The launcher or Task Scheduler runs the GUI only if exit code 1 is returned.
->   - **Windows Event Log Mode (`--event` / `-e`):** Writes Event ID 1001 to the Windows Application Log via `ReportEventA` in **~300 µs**. The checker closes in **9.88 ms**, and Windows Task Scheduler natively catches the event via `<EventTrigger>` to start `AutoChecker.exe`.
 
 ### Compiling the C Checker
 

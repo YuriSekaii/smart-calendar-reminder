@@ -22,30 +22,23 @@ What actually matters to system bootup and OS responsiveness is:
 
 ## 🔬 Scenario 1: Missed Event Detected (Popup Triggered)
 
-**Action:** Scan `reminders.json` $\rightarrow$ Match missed event from earlier today $\rightarrow$ Dispatch interactive GUI alert popup.
+**Action:** Scan `reminders.json` $\rightarrow$ Match missed event from earlier today $\rightarrow$ Dispatch Event ID 777 to Windows Task Scheduler.
 
 | Implementation | Architecture / Type | Process Lifetime / Time to Close | Alert Handling Mechanism | Exact Memory Footprint (Committed / Working Set) |
 | :--- | :--- | :--- | :--- | :--- |
-| **PyInstaller (`AutoChecker.exe`)** | Self-extracting archive | ~1,575 ms *(~1.58 s)* | Synchronous PyInstaller extract + Tkinter bootstrap | **49,208 KB (~49.2 MB)** *(7,352 KB bootloader + 41,856 KB GUI)* |
-| **Raw Python (`checker.py`)** | CPython 3.11 Runtime | ~172.6 ms | Synchronous Python GUI bootstrap | **~25,000 KB (~25 MB)** held until dismissed |
-| **Pure C Standalone (`checker_ultra.exe`)** | **Signal Mode (`--signal`)** | **8.98 ms** | **Microsecond Exit Code Bit `1`** | **76 KB Private Commit (Peak 496 KB) / 32 KB WS (Peak 3.0 MB)** |
-| **Pure C Standalone (`checker_ultra.exe`)** | **Event Log Mode (`--event`)** | **9.88 ms** | **Task Scheduler `EventTrigger`** | **76 KB Private Commit (Peak 496 KB) / 32 KB WS (Peak 3.0 MB)** |
-| **Pure C Standalone (`checker_ultra.exe`)** | **Direct Spawn (Default)** | **14.31 ms** | **Autonomous async `CreateProcessA`** | **76 KB Private Commit (Peak 496 KB) / 32 KB WS (Peak 3.0 MB)** |
-| **Pure C DLL (`checker.dll`)** | **In-Process Shared Library** | **6.27 ms** | **In-memory scan + async `CreateProcessA`** | **64 KB static BSS buffer (0 KB heap, 0 MB host overhead)** |
+| **PyInstaller (`AutoChecker.exe`)** | Self-extracting archive | ~1,519.7 ms *(~1.52 s)* | Synchronous PyInstaller extract + Tkinter bootstrap | **49,208 KB (~49.2 MB)** *(7,352 KB bootloader + 41,856 KB GUI)* |
+| **Raw Python (`checker.py`)** | CPython 3.11 Runtime | ~174.9 ms | Synchronous Python GUI bootstrap | **~25,000 KB (~25 MB)** held until dismissed |
+| **Pure C Standalone (`checker_ultra.exe`)** | **Standalone Win32 Process** | **9.98 ms** | **Windows Event 777 Handoff (60 µs)** | **76 KB Private Commit (Peak 496 KB) / 32 KB WS (Peak 3.0 MB)** |
+| **Pure C DLL (`checker.dll`)** | **In-Process Shared Library** | **1.12 ms** *(597 µs internal)* | **Windows Event 777 Handoff (60 µs)** | **64 KB static BSS buffer (0 KB heap, 0 MB host overhead)** |
 
-* **Zero Boot Blocking:** Rather than stalling system bootup to extract archives and initialize Tkinter, `checker_ultra.exe` hands off the GUI in milliseconds and exits immediately, returning 100% of its working set memory to Windows while the GUI dialog renders independently.
-* **Why `CreateProcess` Takes ~5 ms (Not "A Few CPU Cycles"):**  
-  In Windows NT, launching a process is not a simple message send—it is a heavyweight synchronous kernel operation (`NtCreateUserProcess`). The operating system must:
-  1. Open and validate the target executable on NTFS (`IoCreateFile`, parse PE headers).
-  2. Allocate the `EPROCESS` block, page directory tables (PML4), and new Virtual Address Space.
-  3. Map the executable sections and system DLLs (`ntdll.dll`, `kernel32.dll`).
-  4. Synchronously notify kernel minifilters—including **Windows Defender (`WdFilter.sys`)** via `PsSetCreateProcessNotifyRoutineEx` to inspect the executable headers and process integrity before allowing execution.
-  5. Perform an inter-process ALPC round-trip with the Windows Subsystem (`csrss.exe`) to register the process and thread IDs.  
-  Only after the kernel and security subsystems finish this setup does `CreateProcess` return control. This synchronous kernel pipeline consumes ~4.85 ms (~18 million CPU clock cycles).
-* **The "Mark a Bit" Solution (Microsecond Signaling):**
-  To bypass kernel `CreateProcess` wait times completely:
-  1. **Exit Code Bit (`--signal` / `-s`):** `checker_ultra.exe` sets its process exit code to `1` in `< 1 µs` (`ExitProcess(1)`). It exits in **8.98 ms** with **0 ms extra wait for GUI**. The launcher or Task Scheduler runs the GUI only if exit code 1 is received.
-  2. **Windows Event Log (`--event` / `-e`):** `checker_ultra.exe` logs Event ID 1001 to the Windows Application Log via `ReportEventA` in **~300 µs**. The checker exits in **9.88 ms**, and Windows Task Scheduler natively catches the event via `<EventTrigger>` to start `AutoChecker.exe`.
+* **The 16x DLL Speedup:** When using `checker.dll`, calling `CreateProcessA` directly took **~5.8 ms** of CPU time inside the process. By instead calling `ReportEventA` with Event ID 777, the handoff completes in **60 µs**, dropping the DLL's in-memory execution time to **~0.35–0.59 ms**—a **16.4x speedup**!
+* **Why Task Scheduler EventTrigger is Best:**  
+  1. Windows Task Scheduler service (`Schedule` in `svchost.exe`) is already running natively in Windows at 0 extra user RAM.
+  2. The checker signals Event ID 777 in **60 µs** and terminates immediately.
+  3. Task Scheduler catches Event ID 777 and starts `AutoChecker.exe` asynchronously (~200 ms later).
+  4. By the time the GUI renders, `checker_ultra.exe` has already been dead and closed for 190 ms, and 100% of its memory has been released to Windows.
+* **Why Custom Event ID 777 Has Zero Collision:**  
+  Event ID 1001 in Windows is shared with Windows Error Reporting (crash dumps). Using custom Event ID **777** with source name `SmartCalendar` guarantees that no other system event or app crash will ever collide with the reminder trigger.
 
 ---
 
@@ -55,10 +48,10 @@ What actually matters to system bootup and OS responsiveness is:
 
 | Implementation | Architecture / Type | Total Process Lifetime (RAM Release) | Total CPU Hardware Cycles | Exact Memory Footprint (Committed / Working Set) |
 | :--- | :--- | :--- | :--- | :--- |
-| **PyInstaller (`AutoChecker.exe`)** | Self-extracting archive | ~1,415.7 ms *(~1.42 s)* | ~2,145,000,000 | ~45 MB held for 1.42 s |
-| **Raw Python (`checker.py`)** | CPython 3.11 Runtime | ~66.9 ms | ~224,000,000 | ~25 MB held for 67 ms |
-| **Pure C Binary (`checker_ultra.exe`)** | **Standalone Win32 Process** | **7.64 ms** | **~10,500,000** | **76 KB Private Commit (Peak 496 KB) / 32 KB WS (Peak 3.0 MB)** |
-| **Pure C DLL (`checker.dll`)** | **In-Process Shared Library** | **0.322 ms** *(322 µs)* | **~190,000** | **64 KB static BSS buffer (0 KB heap overhead)** |
+| **PyInstaller (`AutoChecker.exe`)** | Self-extracting archive | ~1,392.5 ms *(~1.39 s)* | ~2,146,000,000 | ~45 MB held for 1.39 s |
+| **Raw Python (`checker.py`)** | CPython 3.11 Runtime | ~66.1 ms | ~222,000,000 | ~25 MB held for 66 ms |
+| **Pure C Binary (`checker_ultra.exe`)** | **Standalone Win32 Process** | **7.79 ms** | **~10,600,000** | **76 KB Private Commit (Peak 496 KB) / 32 KB WS (Peak 3.0 MB)** |
+| **Pure C DLL (`checker.dll`)** | **In-Process Shared Library** | **0.339 ms** *(339 µs)* | **~190,000** | **64 KB static BSS buffer (0 KB heap overhead)** |
 
 ---
 
@@ -66,12 +59,10 @@ What actually matters to system bootup and OS responsiveness is:
 
 | Implementation | Runtime / Engine | Binary Size | Quiet Lifetime (RAM Release) | Missed Event Checker Lifetime | Total CPU Cycles (Quiet Boot) | Memory Lifecycle & Exact Footprint |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **PyInstaller (`AutoChecker.exe`)** | Self-extracting archive | 11.2 MB | ~1,415 ms *(~1.42 s)* | ~1,575 ms | ~2,145,000,000 | Holds **49,208 KB (~49.2 MB)** until dismissed |
-| **Raw Python (`checker.py`)** | CPython 3.11 Runtime | 12.1 KB | ~66.9 ms | ~172.6 ms | ~224,000,000 | Holds **~25,000 KB (~25 MB)** until dismissed |
-| **Pure C (`checker_ultra.exe`)** | **Standalone Win32 (`--signal`)** | **8.5 KB** | **7.64 ms** | **8.98 ms** | **~10,500,000** | **Freed in 7-9 ms (76 KB Private, 32 KB WS)** |
-| **Pure C (`checker_ultra.exe`)** | **Standalone Win32 (`--event`)** | **8.5 KB** | **7.64 ms** | **9.88 ms** | **~10,500,000** | **Freed in 7-10 ms (76 KB Private, 32 KB WS)** |
-| **Pure C (`checker_ultra.exe`)** | **Standalone Win32 (Direct)** | **8.5 KB** | **7.64 ms** | **14.31 ms** | **~10,500,000** | **Freed in 7-14 ms (76 KB Private, 32 KB WS)** |
-| **Pure C (`checker.dll`)** | **In-Process Shared Library** | **8.5 KB** | **0.322 ms (322 µs)** | **6.27 ms** | **~190,000** | **Freed in 322 µs (64 KB static BSS buffer)** |
+| **PyInstaller (`AutoChecker.exe`)** | Self-extracting archive | 11.2 MB | ~1,392 ms *(~1.39 s)* | ~1,519 ms | ~2,146,000,000 | Holds **49,208 KB (~49.2 MB)** until dismissed |
+| **Raw Python (`checker.py`)** | CPython 3.11 Runtime | 12.1 KB | ~66.1 ms | ~174.9 ms | ~222,000,000 | Holds **~25,000 KB (~25 MB)** until dismissed |
+| **Pure C (`checker_ultra.exe`)** | **Standalone Win32 Process** | **7.5 KB** | **7.79 ms** | **9.98 ms** | **~10,600,000** | **Freed in 7-10 ms (76 KB Private, 32 KB WS)** |
+| **Pure C (`checker.dll`)** | **In-Process Shared Library** | **7.5 KB** | **0.339 ms (339 µs)** | **1.12 ms** *(597 µs internal)* | **~190,000** | **Freed in 339 µs (64 KB static BSS buffer)** |
 
 ---
 

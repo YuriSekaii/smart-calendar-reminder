@@ -80,54 +80,18 @@ static void print_uint(HANDLE h, unsigned long long val) {
 static char s_buffer[65536];
 
 // Core In-Memory Checking Logic (Executes in ~60 microseconds)
-static void TriggerAlert(int mode) {
-    if (mode == 1) {
-        STARTUPINFOA si;
-        PROCESS_INFORMATION pi;
-        for (size_t i = 0; i < sizeof(si); i++) ((char *)&si)[i] = 0;
-        si.cb = sizeof(si);
-        si.dwFlags = STARTF_USESHOWWINDOW;
-        si.wShowWindow = SW_SHOW;
-
-        // Direct fast-path execution: avoid SearchPathW and redundant GetFileAttributes disk I/O
-        if (!CreateProcessA("dist\\AutoChecker.exe", NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
-            // Fallback: resolve absolute path if current working directory is external
-            char base_path[MAX_PATH];
-            HMODULE hMod = GetModuleHandleA("checker.dll");
-            if (!hMod) hMod = GetModuleHandleA(NULL);
-            GetModuleFileNameA(hMod, base_path, MAX_PATH);
-            char *last_s = NULL;
-            for (char *p = base_path; *p; p++) if (*p == '\\') last_s = p;
-            if (last_s) *last_s = '\0';
-
-            char full_exe[MAX_PATH + 32];
-            char *d = full_exe;
-            for (char *s = base_path; *s; s++) *d++ = *s;
-            const char *exe_suf = "\\dist\\AutoChecker.exe";
-            for (const char *s = exe_suf; *s; s++) *d++ = *s;
-            *d = '\0';
-
-            if (CreateProcessA(full_exe, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
-                CloseHandle(pi.hProcess);
-                CloseHandle(pi.hThread);
-            }
-        } else {
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
-        }
-    } else if (mode == 2) {
-        // Windows Event Log Trigger: Logs Event ID 1001 to the Application Log in ~300 µs.
-        // Windows Task Scheduler natively catches this via <EventTrigger> and starts AutoChecker.exe.
-        HANDLE h = RegisterEventSourceA(NULL, "SmartCalendar");
-        if (h) {
-            ReportEventA(h, 4 /* EVENTLOG_INFORMATION_TYPE */, 0, 1001, NULL, 0, 0, NULL, NULL);
-            DeregisterEventSource(h);
-        }
+// Instant Asynchronous Handoff via Windows Event Log (Event ID 777)
+// Takes ~60 microseconds. Windows Task Scheduler catches Event 777 and launches the alert dialog.
+static void TriggerAlert(void) {
+    HANDLE h = RegisterEventSourceA(NULL, "SmartCalendar");
+    if (h) {
+        ReportEventA(h, 4 /* EVENTLOG_INFORMATION_TYPE */, 0, 777, NULL, 0, 0, NULL, NULL);
+        DeregisterEventSource(h);
     }
 }
 
 // Core In-Memory Checking Logic (Executes in ~60 microseconds)
-__declspec(dllexport) int CheckMissedEventsSignal(int mode) {
+__declspec(dllexport) int CheckMissedEvents(void) {
     SYSTEMTIME st;
     GetLocalTime(&st);
 
@@ -211,18 +175,10 @@ __declspec(dllexport) int CheckMissedEventsSignal(int mode) {
         }
     }
 
-    if (needs_alert && mode > 0) {
-        TriggerAlert(mode);
+    if (needs_alert) {
+        TriggerAlert();
     }
     return needs_alert;
-}
-
-__declspec(dllexport) int CheckMissedEvents(void) {
-    return CheckMissedEventsSignal(1);
-}
-
-__declspec(dllexport) int CheckMissedEventsOnly(void) {
-    return CheckMissedEventsSignal(0);
 }
 
 __declspec(dllexport) void CALLBACK RunCheckMissedEvents(HWND hwnd, HINSTANCE hinst, LPSTR lpszCmdLine, int nCmdShow) {
@@ -238,22 +194,16 @@ typedef BOOL (WINAPI *pfnQPCT)(HANDLE, PULONG64);
 void mainCRTStartup(void) {
     char *cmdLine = GetCommandLineA();
     int is_profile = 0;
-    int mode = 1; // Default: direct async spawn (1)
-
     for (char *c = cmdLine; *c; c++) {
         if (c[0] == '-' && c[1] == '-') {
-            if (c[2] == 's' && c[3] == 'i' && c[4] == 'g') mode = 0; // --signal
-            else if (c[2] == 'e' && c[3] == 'v' && c[4] == 'e') mode = 2; // --event
-            else if (c[2] == 'b' || c[2] == 'p') is_profile = 1; // --benchmark or --profile
-        } else if (c[0] == '-' && (c[1] == 's' || c[1] == 'e')) {
-            if (c[1] == 's') mode = 0; // -s
-            else if (c[1] == 'e') mode = 2; // -e
+            is_profile = 1;
+            break;
         }
     }
 
     if (!is_profile) {
         // Pure bare-metal execution path: Zero profiling overhead
-        int alert_result = CheckMissedEventsSignal(mode);
+        int alert_result = CheckMissedEvents();
         ExitProcess(alert_result ? 1 : 0);
     }
 
@@ -267,7 +217,7 @@ void mainCRTStartup(void) {
     pfnQPCT pQPCT = (pfnQPCT)GetProcAddress(hK32, "QueryProcessCycleTime");
     if (pQPCT) pQPCT(GetCurrentProcess(), &start_cycles);
 
-    int alert_result = CheckMissedEventsSignal(mode);
+    int alert_result = CheckMissedEvents();
 
     QueryPerformanceCounter(&t5);
     if (pQPCT) pQPCT(GetCurrentProcess(), &end_cycles);
@@ -284,10 +234,6 @@ void mainCRTStartup(void) {
     print_str(hOut, "====================================================\n");
     print_str(hOut, "INTERNAL CODE EXECUTION (DIRECT MEASUREMENT)\n");
     print_str(hOut, "====================================================\n");
-    print_str(hOut, "Trigger Mode          : ");
-    if (mode == 0) print_str(hOut, "Signal Only (Exit Code Bit 1, No Spawn)\n");
-    else if (mode == 2) print_str(hOut, "Event Log (ReportEventA Handoff)\n");
-    else print_str(hOut, "Direct Spawn (CreateProcessA)\n");
     print_str(hOut, "Total Internal Time   : ");
     print_float(hOut, elapsed_us);
     print_str(hOut, " us (");
@@ -297,7 +243,7 @@ void mainCRTStartup(void) {
     print_uint(hOut, total_cycles);
     print_str(hOut, " cycles\n");
     print_str(hOut, "Alert Result          : ");
-    print_str(hOut, alert_result ? "YES (Event Detected, Exit Code 1)\n" : "NO (Quiet State, Exit Code 0)\n");
+    print_str(hOut, alert_result ? "YES (Event 777 Dispatched, Exit Code 1)\n" : "NO (Quiet State, Exit Code 0)\n");
     print_str(hOut, "====================================================\n");
 
     ExitProcess(alert_result ? 1 : 0);
