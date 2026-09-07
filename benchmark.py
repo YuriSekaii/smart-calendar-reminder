@@ -54,18 +54,22 @@ def ensure_binaries():
     
     if missing:
         print(f"[*] Missing binaries: {', '.join(missing)}. Attempting compile with gcc...")
+        w64_bin = r'C:\Users\Admin\.gemini\antigravity\brain\1da2a2e3-4053-4ff9-b6db-fd4e0e887062\scratch\w64\w64devkit\bin'
+        env = os.environ.copy()
+        if os.path.exists(w64_bin):
+            env['PATH'] = w64_bin + ';' + env.get('PATH', '')
         try:
             subprocess.run([
                 "gcc", "-O3", "-s", "-nostdlib", "-e", "mainCRTStartup", "-mwindows",
                 "-fno-asynchronous-unwind-tables", "-fno-exceptions", "-fno-ident", "-fno-stack-protector",
-                "-Wl,--subsystem,windows", "-Wl,--stack,65536", "checker_ultra.c", "-lkernel32",
+                "-Wl,--subsystem,windows", "-Wl,--stack,65536", "checker_ultra.c", "-lkernel32", "-ladvapi32",
                 "-o", "checker_ultra.exe"
-            ], check=True)
+            ], env=env, check=True)
             subprocess.run([
                 "gcc", "-O3", "-shared", "-s", "-nostdlib", "-e", "DllMain",
-                "-fno-ident", "-fno-asynchronous-unwind-tables", "checker_ultra.c", "-lkernel32",
+                "-fno-ident", "-fno-asynchronous-unwind-tables", "checker_ultra.c", "-lkernel32", "-ladvapi32",
                 "-o", "checker.dll"
-            ], check=True)
+            ], env=env, check=True)
             print("[+] Successfully built checker_ultra.exe and checker.dll.")
         except Exception as e:
             print(f"[!] Warning: GCC build failed ({e}). Proceeding with existing files if available.")
@@ -89,10 +93,10 @@ def reset_dismissed():
         except Exception:
             pass
 
-def measure_dll_run():
+def measure_dll_run(fn_name=b"CheckMissedEvents"):
     t0 = time.perf_counter_ns()
     h = kernel32.LoadLibraryA(dll_path_b)
-    fn = kernel32.GetProcAddress(h, b"CheckMissedEvents")
+    fn = kernel32.GetProcAddress(h, fn_name)
     c_fn = ctypes.CFUNCTYPE(ctypes.c_int)(fn)
     
     t_exec_0 = time.perf_counter_ns()
@@ -107,15 +111,18 @@ def measure_dll_run():
     cold_load_exit_ms = (t1 - t0) / 1e6
     return internal_us, internal_ms, cold_load_exit_ms, ret
 
-def measure_exe_run():
+def measure_exe_run(args=None):
+    cmd = [exe_path]
+    if args:
+        cmd.extend(args)
     t0 = time.perf_counter_ns()
-    p = subprocess.Popen([exe_path], cwd=app_dir)
+    p = subprocess.Popen(cmd, cwd=app_dir)
     p.wait()
     t1 = time.perf_counter_ns()
     cold_ms = (t1 - t0) / 1e6
     cycles = ctypes.c_uint64()
     kernel32.QueryProcessCycleTime(int(p._handle), ctypes.byref(cycles))
-    return cold_ms, cycles.value
+    return cold_ms, cycles.value, p.returncode
 
 def measure_python_quiet():
     t0 = time.perf_counter_ns()
@@ -243,10 +250,10 @@ def main():
         exe_s1_cold = []
         exe_s1_cyc = []
         for i in range(5):
-            cold_ms, cycles = measure_exe_run()
+            cold_ms, cycles, ret = measure_exe_run()
             exe_s1_cold.append(cold_ms)
             exe_s1_cyc.append(cycles)
-            print(f"Run {i+1:<2} | {cold_ms:8.2f} ms                       | {cycles:>12,} cycles   | QUIET (NO POPUP)")
+            print(f"Run {i+1:<2} | {cold_ms:8.2f} ms                       | {cycles:>12,} cycles   | QUIET (Exit Code 0)")
         print("-" * 96)
         print(f"  EXE S1 Fastest: Process Lifetime = {min(exe_s1_cold):.2f} ms | Cycles = {min(exe_s1_cyc):,}")
 
@@ -326,8 +333,46 @@ def main():
         print("-" * 96)
         print(f"  DLL S2 Fastest: Load-to-Exit = {min(dll_s2_cold):.2f} ms (Non-blocking async handoff)")
 
-        # 2.2 Pure C Standalone
-        print("\n>>> Approach 2: Pure C Standalone Binary (checker_ultra.exe)")
+        # 2.2A Pure C Standalone - Signal Mode (Exit Code Bit 1)
+        print("\n>>> Approach 2A: Pure C Standalone - Signal Mode (--signal / Exit Code Bit 1)")
+        print("-" * 96)
+        print(f"{'Run':<6} | {'Process Lifetime (RAM Release)':<32} | {'CPU Hardware Cycles':<22} | {'Status':<16}")
+        print("-" * 96)
+        exe_s2_sig_cold = []
+        exe_s2_sig_cyc = []
+        for i in range(5):
+            cleanup_autochecker()
+            reset_dismissed()
+            time.sleep(0.1)
+            cold_ms, cycles, ret = measure_exe_run(['--signal'])
+            exe_s2_sig_cold.append(cold_ms)
+            exe_s2_sig_cyc.append(cycles)
+            print(f"Run {i+1:<2} | {cold_ms:8.2f} ms                       | {cycles:>12,} cycles   | SIGNAL (Exit Code {ret})")
+        cleanup_autochecker()
+        print("-" * 96)
+        print(f"  EXE S2 Signal Fastest: Lifetime = {min(exe_s2_sig_cold):.2f} ms | Cycles = {min(exe_s2_sig_cyc):,} (0 ms extra wait!)")
+
+        # 2.2B Pure C Standalone - Event Log Mode (--event / ReportEventA)
+        print("\n>>> Approach 2B: Pure C Standalone - Windows Event Log (--event / ReportEventA)")
+        print("-" * 96)
+        print(f"{'Run':<6} | {'Process Lifetime (RAM Release)':<32} | {'CPU Hardware Cycles':<22} | {'Status':<16}")
+        print("-" * 96)
+        exe_s2_evt_cold = []
+        exe_s2_evt_cyc = []
+        for i in range(5):
+            cleanup_autochecker()
+            reset_dismissed()
+            time.sleep(0.1)
+            cold_ms, cycles, ret = measure_exe_run(['--event'])
+            exe_s2_evt_cold.append(cold_ms)
+            exe_s2_evt_cyc.append(cycles)
+            print(f"Run {i+1:<2} | {cold_ms:8.2f} ms                       | {cycles:>12,} cycles   | EVENT LOGGED (Code {ret})")
+        cleanup_autochecker()
+        print("-" * 96)
+        print(f"  EXE S2 Event Log Fastest: Lifetime = {min(exe_s2_evt_cold):.2f} ms | Cycles = {min(exe_s2_evt_cyc):,} (Task Scheduler Handoff)")
+
+        # 2.2C Pure C Standalone - Direct Spawn Mode (Default / CreateProcessA)
+        print("\n>>> Approach 2C: Pure C Standalone - Direct Spawn (Default / CreateProcessA)")
         print("-" * 96)
         print(f"{'Run':<6} | {'Process Lifetime (RAM Release)':<32} | {'CPU Hardware Cycles':<22} | {'Status':<16}")
         print("-" * 96)
@@ -337,13 +382,13 @@ def main():
             cleanup_autochecker()
             reset_dismissed()
             time.sleep(0.1)
-            cold_ms, cycles = measure_exe_run()
+            cold_ms, cycles, ret = measure_exe_run()
             exe_s2_cold.append(cold_ms)
             exe_s2_cyc.append(cycles)
             print(f"Run {i+1:<2} | {cold_ms:8.2f} ms                       | {cycles:>12,} cycles   | POPUP TRIGGERED")
         cleanup_autochecker()
         print("-" * 96)
-        print(f"  EXE S2 Fastest: Process Lifetime = {min(exe_s2_cold):.2f} ms (Non-blocking async handoff)")
+        print(f"  EXE S2 Direct Fastest: Process Lifetime = {min(exe_s2_cold):.2f} ms (Autonomous async spawn)")
 
         # 2.3 Raw Python
         print("\n>>> Approach 3: Raw Python (checker.py)")
@@ -390,14 +435,16 @@ def main():
         print("\n" + "=" * 96)
         print("            📈 MASTER BENCHMARK SUMMARY: TOTAL PROCESS LIFETIME & CPU CYCLES")
         print("=" * 96)
-        print(f"{'Approach':<28} | {'Scenario 1: Quiet Boot (RAM Release)':<38} | {'Scenario 2: Alert Boot':<24}")
-        print(f"{'':<28} | {'Lifetime':<14} {'CPU Cycles':<22} | {'Checker Exit':<13} {'GUI Spawn':<12}")
+        print(f"{'Approach':<30} | {'Scenario 1: Quiet Boot (RAM Release)':<38} | {'Scenario 2: Alert Boot':<24}")
+        print(f"{'':<30} | {'Lifetime':<14} {'CPU Cycles':<22} | {'Checker Exit':<13} {'GUI Spawn':<12}")
         print("-" * 96)
-        print(f"{'Pure C DLL (checker.dll)':<28} | {min(dll_s1_cold)*1000:6.1f} µs        {'~190,000':<22} | {min(dll_s2_cold):6.2f} ms    {'Async':<12}")
-        print(f"{'Pure C EXE (checker_ultra)':<28} | {min(exe_s1_cold):6.2f} ms        {min(exe_s1_cyc):>12,} cycles      | {min(exe_s2_cold):6.2f} ms    {'Async':<12}")
-        print(f"{'Raw Python (checker.py)':<28} | {min(py_s1_cold):6.2f} ms        {min(py_s1_cyc):>12,} cycles      | {'Blocked':<13} {min(py_s2_spawn):6.2f} ms")
+        print(f"{'Pure C DLL (checker.dll)':<30} | {min(dll_s1_cold)*1000:6.1f} µs        {'~190,000':<22} | {min(dll_s2_cold):6.2f} ms    {'Async':<12}")
+        print(f"{'Pure C EXE --signal (Bit 1)':<30} | {min(exe_s1_cold):6.2f} ms        {min(exe_s1_cyc):>12,} cycles      | {min(exe_s2_sig_cold):6.2f} ms    {'Signal Bit':<12}")
+        print(f"{'Pure C EXE --event (Event Log)':<30} | {min(exe_s1_cold):6.2f} ms        {min(exe_s1_cyc):>12,} cycles      | {min(exe_s2_evt_cold):6.2f} ms    {'EventTrigger':<12}")
+        print(f"{'Pure C EXE (Direct Spawn)':<30} | {min(exe_s1_cold):6.2f} ms        {min(exe_s1_cyc):>12,} cycles      | {min(exe_s2_cold):6.2f} ms    {'Async':<12}")
+        print(f"{'Raw Python (checker.py)':<30} | {min(py_s1_cold):6.2f} ms        {min(py_s1_cyc):>12,} cycles      | {'Blocked':<13} {min(py_s2_spawn):6.2f} ms")
         if has_pyinstaller:
-            print(f"{'PyInstaller (AutoChecker)':<28} | {min(pi_s1_cold):6.1f} ms        {min(pi_s1_cyc):>12,} cycles      | {'Blocked':<13} {min(pi_s2_spawn):6.1f} ms")
+            print(f"{'PyInstaller (AutoChecker)':<30} | {min(pi_s1_cold):6.1f} ms        {min(pi_s1_cyc):>12,} cycles      | {'Blocked':<13} {min(pi_s2_spawn):6.1f} ms")
         print("=" * 96)
 
     finally:
