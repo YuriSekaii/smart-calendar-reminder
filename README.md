@@ -69,29 +69,32 @@ To eliminate interpreted runtime overhead during Windows startup, the project in
 
 ### 📊 Real-World Bootup Benchmarks (AMD Ryzen 5 5600X @ 3.7 GHz)
 
+> 💡 **Why Process Lifetime & CPU Cycles Matter:**  
+> A background checker occupies system RAM and CPU resources for the entire duration it remains open. While internal code logic may run quickly in memory, runtime bootstrap, module loading, and process teardown dictate real-world OS bootup impact. **The faster the process exits and closes, the faster 100% of its RAM and handles are released back to Windows.**
+
 #### Scenario 1: Missed Event Detected (Popup Triggered)
 *Action: Scan `reminders.json` $\rightarrow$ Match missed event $\rightarrow$ Asynchronously dispatch GUI alert popup.*
 
-| Implementation | Type | Internal Execute Time | Cold Launch-to-Exit Time | Alert Handling |
+| Implementation | Type | Total Time Before Close (RAM Release) | Alert Handling | Peak RAM Overhead |
 | :--- | :--- | :--- | :--- | :--- |
-| **PyInstaller (`AutoChecker.exe`)** | Self-extracting archive | ~80.0 ms | ~1,605 ms *(1.6 s)* | Synchronous Python GUI bootstrap |
-| **Raw Python (`checker.py`)** | CPython 3.11 VM | ~25.0 ms | ~120.0 ms | Python VM initialization + GUI spawn |
-| **Pure C Binary (`checker_ultra.exe`)** | **Standalone Win32 Process** | **5.74 ms** | **11.85 ms** | Non-blocking async `CreateProcessA` |
-| **Pure C DLL (`checker.dll`)** | **In-Process Shared Library** | **5.95 ms** | **6.46 ms** | In-memory scan + async `CreateProcessA` |
+| **PyInstaller (`AutoChecker.exe`)** | Self-extracting archive | ~1,630 ms *(~1.63 s)* | Synchronous Python GUI bootstrap | ~45 MB (held in RAM) |
+| **Raw Python (`checker.py`)** | CPython 3.11 VM | ~171.2 ms | Python VM initialization + GUI spawn | ~25 MB (held in RAM) |
+| **Pure C Binary (`checker_ultra.exe`)** | **Standalone Win32 Process** | **13.90 ms** | **Non-blocking async `CreateProcessA`** | **< 1 MB (released in 13.9 ms)** |
+| **Pure C DLL (`checker.dll`)** | **In-Process Shared Library** | **6.33 ms** | **In-memory scan + async `CreateProcessA`** | **0 MB extra (released in 6.3 ms)** |
 
 #### Scenario 2: Quiet Bootup / No Event Detected (95%+ of System Boots)
-*Action: Scan `reminders.json` $\rightarrow$ Zero missed events $\rightarrow$ Instant silent termination.*
+*Action: Scan `reminders.json` $\rightarrow$ Zero missed events $\rightarrow$ Instant silent termination and RAM release.*
 
-| Implementation | Type | Internal Execute Time | Process Launch-to-Exit | CPU Cycles Consumed |
+| Implementation | Type | Total Process Lifetime (RAM Release Time) | Total CPU Cycles Consumed | RAM Residency Impact |
 | :--- | :--- | :--- | :--- | :--- |
-| **PyInstaller (`AutoChecker.exe`)** | Self-extracting archive | ~80.0 ms | ~1,605 ms *(1.6 s)* | ~6,011,000,000 |
-| **Raw Python (`checker.py`)** | CPython 3.11 VM | 0.950 ms | ~66.5 ms | ~366,000,000 |
-| **Pure C Binary (`checker_ultra.exe`)** | **Standalone Win32 Process** | **0.117 ms** *(117 µs)* | **6.23 ms** | **~466,000** |
-| **Pure C DLL (`checker.dll`)** | **In-Process Shared Library** | **0.058 ms** *(58 µs)* | **0.307 ms** *(307 µs)* | **~190,000** |
+| **PyInstaller (`AutoChecker.exe`)** | Self-extracting archive | ~1,558.9 ms *(~1.56 s)* | ~2,171,000,000 | ~45 MB held for 1.56 s |
+| **Raw Python (`checker.py`)** | CPython 3.11 VM | ~67.8 ms | ~228,000,000 | ~25 MB held for 68 ms |
+| **Pure C Binary (`checker_ultra.exe`)** | **Standalone Win32 Process** | **6.27 ms** | **~5,831,000** | **< 1 MB released in 6.27 ms** |
+| **Pure C DLL (`checker.dll`)** | **In-Process Shared Library** | **0.318 ms** *(318 µs)* | **~190,000** | **0 MB extra released in 318 µs** |
 
 > 🚀 **Key Performance Takeaways:**
-> - **Quiet Boot:** `checker_ultra.exe` runs in **117 µs** and exits in **~6.2 ms**, saving over **5.9 billion CPU clock cycles** on boot.
-> - **Alert Boot:** When an event is missed, it dispatches the popup dialog asynchronously in **5.74 ms** and exits in **11.85 ms**, completely avoiding GUI boot blocking.
+> - **Immediate RAM Release on Quiet Boot:** The pure C executable (`checker_ultra.exe`) checks and exits cleanly in **6.27 ms** (**318 µs for DLL**), immediately returning 100% of allocated memory back to Windows. This is **~248x faster memory release** than PyInstaller while saving over **2.1 billion CPU clock cycles**.
+> - **Zero-Blocking Alert Boot:** When a missed event is found, `checker_ultra.exe` hands off the popup dialog asynchronously via Win32 `CreateProcessA` and exits immediately in **13.90 ms**, allowing system startup to finish with zero delay while the GUI renders independently.
 
 ### Compiling the C Checker
 
