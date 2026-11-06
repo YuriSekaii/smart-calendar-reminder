@@ -3,7 +3,7 @@ from tkinter import ttk, messagebox
 from tkcalendar import Calendar
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 import scheduler_helper
 
 WEEKDAY_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -64,6 +64,9 @@ class ReminderEditor:
         self.selected_rec_event_id = None
         self.active_timetable_day = "Daily"
         self._updating_form = False
+        self.multi_dates = set()
+        self._anchor_date = None
+        self._click_state = 0
 
         main_container = tk.Frame(root)
         main_container.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
@@ -103,16 +106,25 @@ class ReminderEditor:
                             year=now.year, month=now.month, day=now.day)
         self.cal.pack(pady=2)
         self.cal.bind("<<CalendarSelected>>", self.on_date_click)
+        self._anchor_date = now.date()  # calendar opens with today selected
+
+        for week in self.cal._calendar:
+            for day_label in week:
+                day_label.bind("<Button-1>", self._record_click_state, add="+")
 
         self.cal.tag_config('has_note', background='#E53935', foreground='white')
         self.cal.tag_config('is_today', background='#FFE082', foreground='#000000')
         self.cal.tag_config('today_has_note', background='#B71C1C', foreground='#FFEB3B')
+        self.cal.tag_config('multi_sel', background='#1E88E5', foreground='white')
 
         legend = tk.Frame(self.left_frame)
         legend.pack(fill=tk.X, pady=(1, 2))
         tk.Label(legend, text="■ Today", fg="#FFA000", font=("Arial", 8, "bold")).pack(side=tk.LEFT, padx=3)
         tk.Label(legend, text="■ Has Event", fg="#E53935", font=("Arial", 8, "bold")).pack(side=tk.LEFT, padx=3)
         tk.Label(legend, text="■ Today + Event", fg="#B71C1C", font=("Arial", 8, "bold")).pack(side=tk.LEFT, padx=3)
+
+        tk.Label(self.left_frame, text="Tip: Ctrl+click / Shift+click to select multiple dates",
+                 font=("Arial", 8), fg="#777777").pack(anchor=tk.W, pady=(0, 2))
 
         date_hdr = tk.Frame(self.left_frame)
         date_hdr.pack(fill=tk.X, pady=(2, 2))
@@ -484,19 +496,56 @@ class ReminderEditor:
         num_tasks = scheduler_helper.sync_all_tasks(self.reminders)
         self.status_var.set(f" Active Scheduled Reminders: {num_tasks} | 5-min alert auto-popup armed in Windows (0 background CPU)")
 
+        if len(self.multi_dates) > 1:
+            self._show_multi_selection_ui()
+        else:
+            self._apply_multi_highlight()
+
     # =========================================================================
     # LEFT PANEL LOGIC (Calendar & Multi-Event)
     # =========================================================================
     def go_to_today(self):
         today = datetime.now().date()
+        self.multi_dates = {today}
+        self._anchor_date = today
+        self._apply_multi_highlight()
         self.cal.see(today)
         self.cal.selection_set(today)
         self.load_cal_events_for_date(today.strftime("%Y-%m-%d"))
+
+    def _record_click_state(self, event):
+        self._click_state = event.state
+
+    def _apply_multi_highlight(self):
+        try:
+            self.cal.calevent_remove(tag='multi_sel')
+        except Exception:
+            pass
+        if len(self.multi_dates) > 1:
+            for d in sorted(self.multi_dates):
+                self.cal.calevent_create(d, 'Selected', 'multi_sel')
+
+    def _show_multi_selection_ui(self):
+        self._apply_multi_highlight()
+
+        for row in self.cal_tree.get_children():
+            self.cal_tree.delete(row)
+        self.clear_cal_form()
+
+        dates = sorted(self.multi_dates)
+        preview = ", ".join(d.strftime("%Y-%m-%d") for d in dates[:4])
+        if len(dates) > 4:
+            preview += ", …"
+        self.cal_date_label.config(text=f"Adding to {len(dates)} dates: {preview}")
+        self.btn_save_cal.config(text=f"Add Event to {len(dates)} Dates")
 
     def on_date_click(self, event):
         self.root.after(50, self.smart_process_click)
 
     def smart_process_click(self):
+        click_state = self._click_state
+        self._click_state = 0
+
         try:
             sel_date = self.cal.selection_get()
             if not sel_date:
@@ -511,8 +560,38 @@ class ReminderEditor:
         if sel_date.month != disp_month or sel_date.year != disp_year:
             self.cal.see(sel_date)
 
-        date_str = sel_date.strftime("%Y-%m-%d")
-        self.load_cal_events_for_date(date_str)
+        shift = bool(click_state & 0x0001)
+        ctrl = bool(click_state & 0x0004)
+
+        if shift and self._anchor_date is not None:
+            start, end = sorted((self._anchor_date, sel_date))
+            self.multi_dates = {start + timedelta(days=i) for i in range((end - start).days + 1)}
+        elif ctrl:
+            if not self.multi_dates:
+                self.multi_dates = {self._anchor_date} if self._anchor_date else {sel_date}
+            toggled_off = sel_date in self.multi_dates
+            if toggled_off:
+                self.multi_dates.discard(sel_date)
+            else:
+                self.multi_dates.add(sel_date)
+            if not self.multi_dates:
+                self.multi_dates.add(sel_date)
+            if not toggled_off or self._anchor_date is None:
+                self._anchor_date = sel_date
+        else:
+            self.multi_dates = {sel_date}
+            self._anchor_date = sel_date
+            self._apply_multi_highlight()
+            self.load_cal_events_for_date(sel_date.strftime("%Y-%m-%d"))
+            return
+
+        if len(self.multi_dates) > 1:
+            self._show_multi_selection_ui()
+        else:
+            only = next(iter(self.multi_dates))
+            self._apply_multi_highlight()
+            self.cal.selection_set(only)
+            self.load_cal_events_for_date(only.strftime("%Y-%m-%d"))
 
     def load_cal_events_for_date(self, date_str):
         self.cal_date_label.config(text=f"Events for: {date_str}")
@@ -681,13 +760,9 @@ class ReminderEditor:
                 if not ans:
                     return
 
-        full_datetime_str = f"{selected_date} {start_time_24}"
         is_annual = self.annual_var.get()
         rtype = "annual" if is_annual else "once"
-
-        entry = {
-            "id": self.selected_cal_event_id if self.selected_cal_event_id else "rem_" + os.urandom(4).hex(),
-            "datetime": full_datetime_str,
+        common_fields = {
             "time": start_time_24,
             "has_end_time": has_end,
             "end_time": end_time_24,
@@ -696,6 +771,38 @@ class ReminderEditor:
             "type": rtype,
             "repeat": rtype,
             "important": bool(self.important_var.get())
+        }
+
+        if len(self.multi_dates) > 1 and not self.selected_cal_event_id:
+            dates = sorted(self.multi_dates)
+            for d in dates:
+                entry = {
+                    "id": "rem_" + os.urandom(4).hex(),
+                    "datetime": f"{d:%Y-%m-%d} {start_time_24}",
+                    **common_fields
+                }
+                self.reminders.append(entry)
+
+            scheduler_helper.save_reminders(self.reminders)
+            self.load_all_data()
+
+            first = dates[0]
+            self.multi_dates = {first}
+            self._anchor_date = first
+            self._apply_multi_highlight()
+            self.cal.selection_set(first)
+            self.cal.see(first)
+            self.load_cal_events_for_date(first.strftime("%Y-%m-%d"))
+
+            period = scheduler_helper.format_time_period(start_time_24, end_time_24, has_end)
+            messagebox.showinfo("Saved", f"Event saved for {len(dates)} dates ({period})")
+            return
+
+        full_datetime_str = f"{selected_date} {start_time_24}"
+        entry = {
+            "id": self.selected_cal_event_id if self.selected_cal_event_id else "rem_" + os.urandom(4).hex(),
+            "datetime": full_datetime_str,
+            **common_fields
         }
 
         if self.selected_cal_event_id:
