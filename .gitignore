@@ -7,11 +7,17 @@ editor_debug.py
 
 # PyInstaller / Build outputs / Binaries
 build/
-dist/
+dist/*
 *.spec
 *.exe
 *.dll
 *.bak
+
+# Built binaries ARE committed so `git pull` keeps MyCalendarApp.lnk up to date
+!dist/MyCalendarApp.exe
+!dist/AutoChecker.exe
+!checker_ultra.exe
+!checker.dll
 
 # User / Personal data
 reminders.json
