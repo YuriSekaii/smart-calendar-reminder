@@ -191,6 +191,10 @@ class ReminderEditor:
         self.annual_cb = tk.Checkbutton(opt_row, text="Repeat Yearly (Birthdays / Anniversaries)", variable=self.annual_var, font=("Arial", 9))
         self.annual_cb.pack(side=tk.LEFT)
 
+        self.important_var = tk.BooleanVar(value=False)
+        self.important_cb = tk.Checkbutton(opt_row, text="Important Event (remind at startup for 7 days)", variable=self.important_var, font=("Arial", 9))
+        self.important_cb.pack(side=tk.LEFT, padx=(10, 0))
+
         # Note Text
         tk.Label(cal_form, text="Note:", font=("Arial", 9)).pack(anchor=tk.W, pady=(2, 0))
         self.cal_note_entry = tk.Text(cal_form, height=4, wrap=tk.WORD, font=("Arial", 9))
@@ -545,6 +549,8 @@ class ReminderEditor:
 
             rep = "Yearly" if evt.get("type") == "annual" else "Once"
             note_snip = evt.get("note", "").replace("\n", " ")
+            if evt.get("important", True):
+                note_snip = "★ " + note_snip
             self.cal_tree.insert("", tk.END, iid=evt["id"], values=(period_str, rep, note_snip))
 
         if date_events:
@@ -591,6 +597,7 @@ class ReminderEditor:
             self.on_cal_end_toggle()
 
             self.annual_var.set(item.get("type") == "annual" or item.get("repeat") == "annual")
+            self.important_var.set(bool(item.get("important", True)))
 
             self.cal_note_entry.delete("1.0", tk.END)
             self.cal_note_entry.insert(tk.END, item.get("note", ""))
@@ -613,6 +620,7 @@ class ReminderEditor:
             self.on_cal_end_toggle()
 
             self.annual_var.set(False)
+            self.important_var.set(False)
             self.cal_note_entry.delete("1.0", tk.END)
             self.btn_save_cal.config(text="Save / Add Event")
             self.cal_tree.selection_remove(self.cal_tree.selection())
@@ -686,7 +694,8 @@ class ReminderEditor:
             "is_overnight": (end_time_24 < start_time_24) if has_end and end_time_24 else False,
             "note": note_text,
             "type": rtype,
-            "repeat": rtype
+            "repeat": rtype,
+            "important": bool(self.important_var.get())
         }
 
         if self.selected_cal_event_id:

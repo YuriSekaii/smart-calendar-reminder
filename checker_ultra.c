@@ -146,6 +146,8 @@ __declspec(dllexport) int CheckMissedEvents(void) {
                 int is_annual = mem_contains(obj_start, obj_end, "\"annual\"", 8);
                 int is_daily_or_weekly = mem_contains(obj_start, obj_end, "\"daily\"", 7) ||
                                          mem_contains(obj_start, obj_end, "\"weekly\"", 8);
+                int is_not_important = mem_contains(obj_start, obj_end, "\"important\": false", 18) ||
+                                       mem_contains(obj_start, obj_end, "\"important\":false", 17);
 
                 if (is_annual) {
                     ev_year = st.wYear;
@@ -154,18 +156,20 @@ __declspec(dllexport) int CheckMissedEvents(void) {
                     }
                 }
 
-                if (ev_year == st.wYear && ev_month == st.wMonth && ev_day == st.wDay) {
-                    if (ev_hour < st.wHour || (ev_hour == st.wHour && ev_min <= st.wMinute)) {
-                        needs_alert = 1;
-                        break;
+                if (!is_not_important) {
+                    if (ev_year == st.wYear && ev_month == st.wMonth && ev_day == st.wDay) {
+                        if (ev_hour < st.wHour || (ev_hour == st.wHour && ev_min <= st.wMinute)) {
+                            needs_alert = 1;
+                            break;
+                        }
                     }
-                }
 
-                if (!is_daily_or_weekly) {
-                    int day_diff = (ev_year - st.wYear) * 365 + (ev_month - st.wMonth) * 30 + (ev_day - st.wDay);
-                    if (day_diff > 0 && day_diff <= 7) {
-                        needs_alert = 1;
-                        break;
+                    if (!is_daily_or_weekly) {
+                        int day_diff = (ev_year - st.wYear) * 365 + (ev_month - st.wMonth) * 30 + (ev_day - st.wDay);
+                        if (day_diff > 0 && day_diff <= 7) {
+                            needs_alert = 1;
+                            break;
+                        }
                     }
                 }
             }

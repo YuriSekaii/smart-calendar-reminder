@@ -22,6 +22,8 @@ def check_bootup_reminders():
         rtype = item.get("type", item.get("repeat", "once"))
         if rtype in ["daily", "weekly"]:
             continue
+        if not item.get("important", True):
+            continue
 
         event_time = scheduler_helper.parse_dt_fast(item.get('datetime'))
         if not event_time:
