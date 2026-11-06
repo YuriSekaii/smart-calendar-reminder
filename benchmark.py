@@ -18,6 +18,8 @@ import sys
 import time
 from datetime import datetime, timedelta
 
+import scheduler_helper
+
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
 
@@ -32,6 +34,7 @@ reminders_file = os.path.join(app_dir, "reminders.json")
 reminders_dist = os.path.join(dist_dir, "reminders.json")
 dismissed_file = os.path.join(dist_dir, "dismissed_today.json")
 dismissed_app = os.path.join(app_dir, "dismissed_today.json")
+dismissed_state = scheduler_helper.DISMISSED_FILE
 bak_path = os.path.join(app_dir, "reminders.json.bak")
 
 # Configure Win32 Kernel32 & User32 APIs
@@ -86,7 +89,7 @@ def cleanup_autochecker():
 def reset_dismissed():
     now_str = datetime.now().strftime("%Y-%m-%d")
     payload = {"date": now_str, "dismissed_ids": []}
-    for p in [dismissed_app, dismissed_file]:
+    for p in [dismissed_app, dismissed_file, dismissed_state]:
         try:
             with open(p, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=4)

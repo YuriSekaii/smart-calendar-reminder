@@ -29,15 +29,46 @@ def parse_dt_fast(dt_str):
 
 def get_app_dir():
     if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
+        exe_dir = os.path.dirname(sys.executable)
+        parent = os.path.dirname(exe_dir)
+        if os.path.basename(exe_dir).lower() == "dist" and (
+            os.path.exists(os.path.join(parent, "reminders.json")) or
+            os.path.exists(os.path.join(parent, "checker.py"))
+        ):
+            return parent
+        return exe_dir
     else:
         return os.path.dirname(os.path.abspath(__file__))
 
+def get_state_dir():
+    """
+    Returns the directory for transient machine-local runtime state:
+    - dismissed_today.json
+    - active_alerts.json
+    - notify.pid
+    - scheduled_tasks.json
+    
+    Uses %LOCALAPPDATA%\\SmartCalendar by default so that:
+    1. Dismissing alerts does not modify synced files in D:\\Desktop\\Code.
+    2. GitHub users have an automatic, user-writable cache folder.
+    3. Falls back gracefully to get_app_dir() if %LOCALAPPDATA% is unavailable.
+    """
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        try:
+            state_dir = os.path.join(local_app_data, "SmartCalendar")
+            os.makedirs(state_dir, exist_ok=True)
+            return state_dir
+        except Exception:
+            pass
+    return get_app_dir()
+
 DATA_FILE = os.path.join(get_app_dir(), "reminders.json")
-ACTIVE_ALERTS_FILE = os.path.join(get_app_dir(), "active_alerts.json")
-DISMISSED_FILE = os.path.join(get_app_dir(), "dismissed_today.json")
-PID_FILE = os.path.join(get_app_dir(), "notify.pid")
-TASK_MANIFEST_FILE = os.path.join(get_app_dir(), "scheduled_tasks.json")
+STATE_DIR = get_state_dir()
+ACTIVE_ALERTS_FILE = os.path.join(STATE_DIR, "active_alerts.json")
+DISMISSED_FILE = os.path.join(STATE_DIR, "dismissed_today.json")
+PID_FILE = os.path.join(STATE_DIR, "notify.pid")
+TASK_MANIFEST_FILE = os.path.join(STATE_DIR, "scheduled_tasks.json")
 
 # --- 12-HOUR / 24-HOUR TIME HELPERS ---
 
@@ -172,6 +203,16 @@ def save_reminders(reminders, file_path=DATA_FILE):
 def get_dismissed_today():
     today_str = datetime.now().strftime("%Y-%m-%d")
     if not os.path.exists(DISMISSED_FILE):
+        for leg in [os.path.join(get_app_dir(), "dismissed_today.json"),
+                    os.path.join(get_app_dir(), "dist", "dismissed_today.json")]:
+            if os.path.exists(leg):
+                try:
+                    with open(leg, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        if data.get("date") == today_str:
+                            return set(data.get("dismissed_ids", []))
+                except Exception:
+                    pass
         return set()
     try:
         with open(DISMISSED_FILE, "r", encoding="utf-8") as f:
@@ -543,6 +584,24 @@ def get_today_timeline(reminders, current_trigger_id=None, now=None):
 
 def get_registered_manifest():
     if not os.path.exists(TASK_MANIFEST_FILE):
+        legacy_candidates = [
+            os.path.join(get_app_dir(), "scheduled_tasks.json"),
+            os.path.join(get_app_dir(), "dist", "scheduled_tasks.json"),
+        ]
+        for leg in legacy_candidates:
+            if os.path.exists(leg):
+                try:
+                    with open(leg, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, list):
+                        data = {t: "" for t in data}
+                    elif not isinstance(data, dict):
+                        data = {}
+                    if data:
+                        save_registered_manifest(data)
+                        return data
+                except Exception:
+                    pass
         return {}
     try:
         with open(TASK_MANIFEST_FILE, "r", encoding="utf-8") as f:
