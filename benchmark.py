@@ -56,26 +56,12 @@ def ensure_binaries():
         missing.append("checker.dll")
     
     if missing:
-        print(f"[*] Missing binaries: {', '.join(missing)}. Attempting compile with gcc...")
-        w64_bin = r'C:\Users\Admin\.gemini\antigravity\brain\1da2a2e3-4053-4ff9-b6db-fd4e0e887062\scratch\w64\w64devkit\bin'
-        env = os.environ.copy()
-        if os.path.exists(w64_bin):
-            env['PATH'] = w64_bin + ';' + env.get('PATH', '')
+        print(f"[*] Missing binaries: {', '.join(missing)}. Attempting build via build_checker.bat...")
         try:
-            subprocess.run([
-                "gcc", "-O3", "-s", "-nostdlib", "-e", "mainCRTStartup", "-mwindows",
-                "-fno-asynchronous-unwind-tables", "-fno-exceptions", "-fno-ident", "-fno-stack-protector",
-                "-Wl,--subsystem,windows", "-Wl,--stack,65536", "checker_ultra.c", "-lkernel32", "-ladvapi32",
-                "-o", "checker_ultra.exe"
-            ], env=env, check=True)
-            subprocess.run([
-                "gcc", "-O3", "-shared", "-s", "-nostdlib", "-e", "DllMain",
-                "-fno-ident", "-fno-asynchronous-unwind-tables", "checker_ultra.c", "-lkernel32", "-ladvapi32",
-                "-o", "checker.dll"
-            ], env=env, check=True)
-            print("[+] Successfully built checker_ultra.exe and checker.dll.")
+            subprocess.run(["cmd", "/c", "build_checker.bat"], cwd=app_dir, check=True)
+            print("[+] Successfully built Rust checker_ultra.exe and checker.dll.")
         except Exception as e:
-            print(f"[!] Warning: GCC build failed ({e}). Proceeding with existing files if available.")
+            print(f"[!] Warning: Rust build failed ({e}). Proceeding with existing files if available.")
 
 def cleanup_autochecker():
     try:

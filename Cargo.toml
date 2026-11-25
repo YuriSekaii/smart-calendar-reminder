@@ -1,0 +1,22 @@
+[package]
+name = "calendar_checker"
+version = "2.0.0"
+edition = "2021"
+
+[lib]
+name = "checker"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "checker_ultra"
+path = "src/main.rs"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

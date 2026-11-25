@@ -66,6 +66,23 @@ What actually matters to system bootup and OS responsiveness is:
 
 ---
 
+## 🆚 Fixed & Optimized C (`checker_ultra.c`) vs Bare-Metal Rust (`src/lib.rs` + `src/main.rs`)
+
+True apples-to-apples alternating benchmark on this machine (both implementing identical JSON parsing, lazy `dismissed_today.json`, `daily`/`weekly`/`overnight` rules, and exact civil-days math; 20 runs Quiet Boot, 5 runs Missed Event):
+
+| Metric | Fixed Zero-CRT C (`24.5 KB` EXE / `24.5 KB` DLL) | Optimized Zero-CRT Rust (`28.2 KB` EXE / `201.7 KB` DLL) |
+| :--- | :--- | :--- |
+| **Quiet Boot DLL Internal** (20 runs) | `108.1 µs` median (`103.0 µs` min) | **`106.0 µs` median (`102.1 µs` min)** |
+| **Quiet Boot DLL Load-to-Exit** (20 runs) | **`385.0 µs` median (`366.3 µs` min)** | `389.6 µs` median (`375.0 µs` min) |
+| **Quiet Boot EXE Lifetime** (20 runs) | `9.48 ms` median (`8.78 ms` min) | **`9.15 ms` median (`8.82 ms` min)** |
+| **Missed Event DLL Internal** (5 runs) | **`747.3 µs` median (`693.6 µs` min)** | `801.2 µs` median (`720.0 µs` min) |
+| **Missed Event EXE Lifetime** (5 runs) | `11.87 ms` median (`11.11 ms` min) | **`11.43 ms` median (`11.18 ms` min)** |
+| **Correctness Parity (6/6 scenarios)** | ✅ 6 / 6 | ✅ 6 / 6 |
+
+> With identical algorithms and syscalls (single `ReadFile`, lazy `dismissed_today.json`), Zero-CRT Rust and Zero-CRT C perform within a few microseconds/milliseconds of each other — Rust edges out C on Quiet Boot DLL internal (`106.0 µs`) and EXE lifetimes (`9.15 ms` / `11.43 ms`), while C has a smaller DLL binary (`24.5 KB` vs `201.7 KB`).
+
+---
+
 ## 🛠️ How to Reproduce
 
 You can reproduce all benchmarks directly on your Windows PC by running the automated benchmark suite included in the repository:
